@@ -43,7 +43,7 @@ npx cap add android
 npx cap sync android
 ```
 
-سپس Android Studio و Android SDK یا JDK 17 + Android SDK و Gradle موردنیاز Capacitor را نصب و پیکربندی کنید. ساخت APK دیباگ:
+سپس Android Studio و Android SDK یا JDK 21 + Android SDK و Gradle موردنیاز Capacitor را نصب و پیکربندی کنید. ساخت APK دیباگ:
 
 ```bash
 npm run android:build
