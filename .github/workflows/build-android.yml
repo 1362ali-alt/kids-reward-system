@@ -59,7 +59,7 @@ jobs:
           gradle_status=${PIPESTATUS[0]}
           if [ "$gradle_status" -ne 0 ]; then
             echo "Gradle failed. Last 25 log lines follow:"
-            tail -n 25 /tmp/gradle-build.log | sed 's/^/::error::/'
+            grep -E -A 4 'FAILURE:|What went wrong:|Execution failed|Could not|No matching|error:' /tmp/gradle-build.log | head -n 10 | sed 's/^/::error::/'
           fi
           exit "$gradle_status"
 
