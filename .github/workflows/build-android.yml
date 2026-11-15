@@ -54,7 +54,14 @@ jobs:
         run: |
           chmod +x android/gradlew
           cd android
-          ./gradlew assembleDebug --no-daemon
+          set +e
+          ./gradlew assembleDebug --no-daemon --stacktrace 2>&1 | tee /tmp/gradle-build.log
+          gradle_status=${PIPESTATUS[0]}
+          if [ "$gradle_status" -ne 0 ]; then
+            echo "Gradle failed. Last 25 log lines follow:"
+            tail -n 25 /tmp/gradle-build.log | sed 's/^/::error::/'
+          fi
+          exit "$gradle_status"
 
       - name: Upload APK artifact
         uses: actions/upload-artifact@v4
