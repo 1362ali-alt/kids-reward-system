@@ -1,7 +1,11 @@
-import { useEffect, useMemo, useState } from 'react';
+import { useEffect, useMemo, useRef, useState } from 'react';
+import type { User } from 'firebase/auth';
+import type { CloudStatus, FamilyDocument, FamilyFirebaseConfig } from './cloud';
+import { createFamilyAccount, friendlyFirebaseError, loginFamilyAccount, logoutFamilyAccount, parseFirebaseConfig, readFirebaseConfig, storeFirebaseConfig, watchAuth, watchFamilyData, writeFamilyData } from './cloud';
+import CloudSettings from './CloudSettings';
 import type { FormEvent, ReactNode } from 'react';
 import {
-  Activity, Bell, CalendarDays, Check, CheckCircle2, ChevronLeft, CircleHelp,
+  Activity, Bell, CalendarDays, Check, CheckCircle2, ChevronLeft, CircleHelp, Cloud, CloudOff,
   Coins, Download, Dumbbell, FileText, Gift, Heart, House, Languages, Menu,
   Pencil, Plus, Search, Settings, ShieldCheck, Sparkles, Star, Target, Trash2,
   Trophy, Users, Wallet, X, BookOpen, BookMarked,
@@ -119,6 +123,12 @@ function loadData(): AppData {
 
 function App() {
   const [data, setData] = useState<AppData>(loadData);
+  const [firebaseConfig, setFirebaseConfig] = useState<FamilyFirebaseConfig | null>(readFirebaseConfig);
+  const [cloudUser, setCloudUser] = useState<User | null>(null);
+  const [cloudStatus, setCloudStatus] = useState<CloudStatus>(readFirebaseConfig() ? 'signed-out' : 'unconfigured');
+  const [cloudMessage, setCloudMessage] = useState('');
+  const [cloudReady, setCloudReady] = useState(false);
+  const lastCloudState = useRef('');
   const [tab, setTab] = useState<Tab>('خانه');
   const [modal, setModal] = useState<ModalType>(null);
   const [editing, setEditing] = useState<Child | Task | Routine | Reward | undefined>();
@@ -128,6 +138,52 @@ function App() {
   const [mobileMenu, setMobileMenu] = useState(false);
   const [query, setQuery] = useState('');
   useEffect(() => { localStorage.setItem(STORAGE_KEY, JSON.stringify(data)); }, [data]);
+  useEffect(() => {
+    if (!firebaseConfig) { setCloudUser(null); setCloudStatus('unconfigured'); setCloudReady(false); return; }
+    setCloudStatus('connecting');
+    return watchAuth(firebaseConfig, user => {
+      setCloudUser(user);
+      setCloudReady(false);
+      setCloudStatus(user ? 'connecting' : 'signed-out');
+      lastCloudState.current = '';
+    }, error => { setCloudStatus('error'); setCloudMessage(friendlyFirebaseError(error)); });
+  }, [firebaseConfig]);
+  useEffect(() => {
+    if (!firebaseConfig || !cloudUser) return;
+    setCloudReady(false);
+    setCloudStatus('connecting');
+    lastCloudState.current = JSON.stringify(data);
+    const unsubscribe = watchFamilyData(firebaseConfig, cloudUser.uid, data as unknown as FamilyDocument, remote => {
+      let incoming = remote as AppData;
+      if (incoming.version !== 2 || !Array.isArray(incoming.children) || !Array.isArray(incoming.tasks) || !Array.isArray(incoming.routines) || !Array.isArray(incoming.rewards)) {
+        setCloudStatus('error'); setCloudMessage('ساختار اطلاعات حساب ابری با این نسخه سازگار نیست.'); return;
+      }
+      const remoteSerialized = JSON.stringify(incoming);
+      const day = todayKey();
+      if (incoming.dayKey !== day) {
+        const carry = incoming.tasks.filter(task => !task.routineId || task.status === 'done').map(task => task.status === 'pending' ? { ...task, dayKey: day, date: todayLabel() } : task);
+        incoming = { ...incoming, dayKey: day, tasks: [...carry, ...incoming.routines.filter(routine => routine.active).map(routine => routineTask(routine, day))] };
+      }
+      const serialized = JSON.stringify(incoming);
+      lastCloudState.current = remoteSerialized;
+      setData(current => JSON.stringify(current) === serialized ? current : incoming);
+      setCloudMessage('');
+    }, () => { setCloudReady(true); setCloudStatus('online'); }, error => {
+      setCloudStatus('error'); setCloudMessage(friendlyFirebaseError(error));
+    });
+    return () => unsubscribe();
+  }, [firebaseConfig, cloudUser]);
+  useEffect(() => {
+    if (!firebaseConfig || !cloudUser || !cloudReady || cloudStatus !== 'online') return;
+    const serialized = JSON.stringify(data);
+    if (serialized === lastCloudState.current) return;
+    const timer = window.setTimeout(() => {
+      void writeFamilyData(firebaseConfig, cloudUser.uid, data as unknown as FamilyDocument).then(() => {
+        lastCloudState.current = serialized; setCloudStatus('online'); setCloudMessage('');
+      }).catch(error => { setCloudStatus('error'); setCloudMessage(friendlyFirebaseError(error)); });
+    }, 450);
+    return () => window.clearTimeout(timer);
+  }, [data, firebaseConfig, cloudUser, cloudReady, cloudStatus]);
   useEffect(() => { if (!toast) return; const id = window.setTimeout(() => setToast(''), 3200); return () => clearTimeout(id); }, [toast]);
   useEffect(() => {
     const refreshDay = () => setData(current => {
@@ -249,8 +305,30 @@ function App() {
     setData(current => ({ ...current, rewards: current.rewards.filter(item => item.id !== reward.id) }));
     setToast('جایزه حذف شد.');
   };
+  const saveCloudConfiguration = (configuration: FamilyFirebaseConfig) => {
+    storeFirebaseConfig(configuration);
+    lastCloudState.current = '';
+    setFirebaseConfig(configuration);
+    setCloudMessage('');
+    setToast('تنظیمات Firebase ذخیره شد. حالا حساب خانواده را بسازید یا وارد شوید.');
+  };
+  const registerCloudAccount = async (email: string, password: string) => {
+    if (!firebaseConfig) return;
+    try { await createFamilyAccount(firebaseConfig, email, password); setToast('حساب خانواده ساخته شد و همگام‌سازی آغاز شد. از همین ایمیل و رمز در گوشی‌های دیگر استفاده کنید.'); }
+    catch (error) { setCloudMessage(friendlyFirebaseError(error)); }
+  };
+  const loginCloudAccount = async (email: string, password: string) => {
+    if (!firebaseConfig) return;
+    try { await loginFamilyAccount(firebaseConfig, email, password); setToast('وارد حساب خانواده شدید؛ اطلاعات در حال همگام‌سازی است.'); }
+    catch (error) { setCloudMessage(friendlyFirebaseError(error)); }
+  };
+  const logoutCloudAccount = async () => {
+    if (!firebaseConfig) return;
+    try { await logoutFamilyAccount(firebaseConfig); setToast('از حساب ابری خارج شدید؛ اطلاعات همین گوشی باقی می‌ماند.'); }
+    catch (error) { setCloudMessage(friendlyFirebaseError(error)); }
+  };
   const exportData = () => {
-    const blob = new Blob([JSON.stringify(data, null, 2)], { type: 'application/json' });
+    const blob = new Blob([JSON.stringify({ format: 'setareh-family-backup-v1', data, firebaseConfig }, null, 2)], { type: 'application/json' });
     const url = URL.createObjectURL(blob);
     const link = document.createElement('a'); link.href = url; link.download = 'setareh-backup.json'; link.click(); URL.revokeObjectURL(url);
     setToast('نسخه‌ی پشتیبان دریافت شد.');
@@ -258,7 +336,9 @@ function App() {
   const importData = async (file?: File) => {
     if (!file) return;
     try {
-      const imported = JSON.parse(await file.text()) as AppData;
+      const backup = JSON.parse(await file.text()) as { data?: AppData; firebaseConfig?: FamilyFirebaseConfig } & Partial<AppData>;
+      const imported = (backup.data ?? backup) as AppData;
+      const importedConfig = backup.firebaseConfig ? parseFirebaseConfig(JSON.stringify(backup.firebaseConfig)) : null;
       if (imported.version !== 2 || !Array.isArray(imported.children) || !Array.isArray(imported.tasks) || !Array.isArray(imported.routines)) throw new Error('invalid file');
       if (!window.confirm('اطلاعات فعلی با نسخه‌ی پشتیبان جایگزین شود؟')) return;
       const day = todayKey();
@@ -266,7 +346,8 @@ function App() {
         ? imported.tasks
         : [...imported.tasks.filter(task => !task.routineId || task.status === 'done').map(task => task.status === 'pending' ? { ...task, dayKey: day, date: todayLabel() } : task), ...imported.routines.filter(routine => routine.active).map(routine => routineTask(routine, day))];
       setData({ ...freshData(), ...imported, tasks, pointsToToman: Number(imported.pointsToToman) || 1000, dayKey: day });
-      setToast('نسخه‌ی پشتیبان بازیابی شد.');
+      if (importedConfig) { storeFirebaseConfig(importedConfig); setFirebaseConfig(importedConfig); }
+      setToast(importedConfig ? 'نسخه‌ی پشتیبان و تنظیمات Firebase بازیابی شد؛ حالا وارد حساب خانواده شوید.' : 'نسخه‌ی پشتیبان بازیابی شد.');
     } catch { setToast('فایل پشتیبان معتبر نیست.'); }
   };
 
@@ -291,14 +372,14 @@ function App() {
     </aside>
     {mobileMenu && <button aria-label="بستن منو" className="scrim" onClick={() => setMobileMenu(false)}/>}
     <main className="main-area">
-      <header className="topbar"><div className="topbar-main"><button className="icon-btn mobile-menu-btn" onClick={() => setMobileMenu(true)} aria-label="باز کردن منو"><Menu size={23}/></button><div className="breadcrumbs"><span>خانواده‌ی ما</span><ChevronLeft size={15}/><b>{tab}</b></div><div className="top-actions"><span className="date-chip"><CalendarDays size={15}/>{todayLabel()}</span><button className="icon-btn notification" aria-label="کارهای در انتظار" onClick={() => { setPage('کارها'); setToast(pending.length ? `${toFa(pending.length)} کار منتظر تأیید شماست.` : 'کار تأییدنشده‌ای برای امروز ندارید.'); }}><Bell size={20}/>{pending.length > 0 && <i/>}</button><div className="top-avatar">👨🏻</div></div></div><nav className="top-tabs" aria-label="منوی اصلی">{navItems.map(({ label, icon: Icon }) => <button key={label} className={tab === label ? 'active' : ''} onClick={() => setPage(label)}><Icon size={18}/><span>{label}</span></button>)}</nav></header>
+      <header className="topbar"><div className="topbar-main"><button className="icon-btn mobile-menu-btn" onClick={() => setMobileMenu(true)} aria-label="باز کردن منو"><Menu size={23}/></button><div className="breadcrumbs"><span>خانواده‌ی ما</span><ChevronLeft size={15}/><b>{tab}</b></div><div className="top-actions"><span className="date-chip"><CalendarDays size={15}/>{todayLabel()}</span><button className={`sync-chip ${cloudStatus}`} onClick={() => setPage('تنظیمات')} title="وضعیت همگام‌سازی">{cloudStatus === 'online' ? <Cloud size={16}/> : cloudStatus === 'connecting' ? <Cloud size={16}/> : <CloudOff size={16}/>}<span>{cloudStatus === 'online' ? 'همگام' : cloudStatus === 'connecting' ? 'در حال اتصال' : cloudStatus === 'error' ? 'خطای اتصال' : 'محلی'}</span></button><button className="icon-btn notification" aria-label="کارهای در انتظار" onClick={() => { setPage('کارها'); setToast(pending.length ? `${toFa(pending.length)} کار منتظر تأیید شماست.` : 'کار تأییدنشده‌ای برای امروز ندارید.'); }}><Bell size={20}/>{pending.length > 0 && <i/>}</button><div className="top-avatar">👨🏻</div></div></div><nav className="top-tabs" aria-label="منوی اصلی">{navItems.map(({ label, icon: Icon }) => <button key={label} className={tab === label ? 'active' : ''} onClick={() => setPage(label)}><Icon size={18}/><span>{label}</span></button>)}</nav></header>
       <div className="page-content">
         {tab === 'خانه' && dashboard}
         {tab === 'فرزندان' && <><PageHeading title="فرزندان خانواده" subtitle="نام، تاریخ تولد و امتیاز هر فرزند را هر زمان تغییر دهید." action="افزودن فرزند" onAction={() => openModal('child')}/><section className="children-cards">{data.children.map(child => <ChildProfile key={child.id} child={child} pointsToToman={data.pointsToToman} tasks={data.tasks} onEdit={() => openModal('child', child)} onDelete={() => removeChild(child)} onTasks={() => { setSelectedChild(child.id); setPage('کارها'); }}/>) }<button className="add-child-card" onClick={() => openModal('child')}><span><Plus size={24}/></span><b>افزودن فرزند</b><small>پروفایل تازه بسازید</small></button></section><section className="panel family-note"><ShieldCheck size={23}/><div><b>حریم خصوصی خانواده</b><p>اطلاعات به‌صورت محلی روی همین دستگاه ذخیره می‌شود. از بخش تنظیمات نسخه‌ی پشتیبان بگیرید.</p></div></section></>}
         {tab === 'کارها' && <><PageHeading title="کارها و برنامه‌ی روزانه" subtitle="برنامه‌های هرروزه، کارهای امروز و امتیاز قابل ویرایش‌اند." action="تعریف کار یک‌باره" onAction={() => openModal('task')}/><section className="panel routines-panel"><div className="section-head"><div><h3><CalendarDays size={19}/> برنامه‌های تکرارشونده</h3><p>کارهای فعال هر روز خودکار برای فرزندها ساخته می‌شوند.</p></div><button className="primary-btn compact-btn" onClick={() => openModal('routine')}><Plus size={17}/> افزودن برنامه</button></div><div className="routine-list">{data.routines.map(routine => <RoutineRow key={routine.id} routine={routine} child={data.children.find(child => child.id === routine.childId)} rate={data.pointsToToman} onEdit={() => openModal('routine', routine)} onDelete={() => removeRoutine(routine)} onToggle={() => toggleRoutine(routine)}/>)}</div>{!data.routines.length && <EmptyState icon="📅" title="برنامه‌ی روزانه‌ای ندارید" text="یک برنامه‌ی تکرارشونده اضافه کنید؛ مثل تمرین زبان یا ورزش روزانه." button="افزودن برنامه" onClick={() => openModal('routine')}/>}</section><section className="panel list-page"><div className="section-head list-title"><div><h3>فهرست کارها</h3><p>تأیید والد امتیاز را به کیف پول اضافه می‌کند.</p></div><span className="history-badge">{toFa(filteredTasks.length)} کار</span></div><div className="filter-bar"><div className="search-box"><Search size={19}/><input value={query} onChange={event => setQuery(event.target.value)} placeholder="جست‌وجوی عنوان کار..."/></div><select value={selectedChild} onChange={event => setSelectedChild(event.target.value)} aria-label="فیلتر فرزند"><option value="all">همه‌ی فرزندان</option>{data.children.map(child => <option value={child.id} key={child.id}>{child.name}</option>)}</select><button className="soft-btn today-filter" onClick={() => setShowTaskHistory(value => !value)}>{showTaskHistory ? 'فقط امروز' : 'نمایش تاریخچه'}</button></div><div className="task-list full-task-list">{filteredTasks.map(task => <TaskRow key={task.id} task={task} child={data.children.find(child => child.id === task.childId)} onApprove={() => approveTask(task)} onEdit={() => openModal(task.routineId ? 'routine' : 'task', task.routineId ? data.routines.find(routine => routine.id === task.routineId) : task)} onDelete={() => removeTask(task)} rate={data.pointsToToman}/>)}</div>{!filteredTasks.length && <EmptyState icon="📝" title="کاری پیدا نشد" text="جست‌وجوی دیگری انجام دهید یا کار تازه‌ای ثبت کنید." button="تعریف کار" onClick={() => openModal('task')}/>}</section></>}
         {tab === 'جایزه‌ها' && <><PageHeading title="فروشگاه جایزه‌ها" subtitle="هزینه‌ی هر جایزه را متناسب با ارزش امتیازها تنظیم کنید." action="افزودن جایزه" onAction={() => openModal('reward')}/><div className="redeem-hint"><Sparkles size={19}/><span>هر امتیاز فعلاً معادل {toFa(data.pointsToToman)} تومان است.</span><button className="text-link" onClick={() => setPage('تنظیمات')}>تغییر نرخ <ChevronLeft size={16}/></button><span className="hint-stars">{toFa(totalPoints)} <Star size={16} fill="currentColor"/></span></div><section className="reward-grid">{data.rewards.map(reward => <RewardCard key={reward.id} reward={reward} childrenList={data.children} onRedeem={redeemReward} onEdit={() => openModal('reward', reward)} onDelete={() => removeReward(reward)} rate={data.pointsToToman}/>) }<button className="add-reward-card" onClick={() => openModal('reward')}><span><Plus size={24}/></span><b>جایزه‌ی تازه</b><small>یک انگیزه‌ی دوست‌داشتنی بسازید</small></button></section></>}
         {tab === 'گزارش' && <><PageHeading title="گزارش خانواده" subtitle="موجودی، تلاش‌ها و ارزش تومانی امتیازهای خانواده."/><div className="report-summary"><StatCard icon={<CheckCircle2/>} label="کارهای تأییدشده‌ی امروز" value={toFa(finished.length)} note="از برنامه‌ی امروز" tone="green"/><StatCard icon={<Wallet/>} label="موجودی امتیازها" value={toFa(totalPoints)} note={toman(totalPoints, data.pointsToToman)} tone="amber"/><StatCard icon={<Gift/>} label="جایزه‌های دریافت‌شده" value={toFa(data.activity.filter(item => item.kind === 'spend').length)} note="لحظه‌های شیرین" tone="violet"/></div><section className="panel report-panel"><div className="section-head"><div><h3>تاریخچه‌ی خانواده</h3><p>همه‌ی ستاره‌ها و تلاش‌ها در یک نگاه.</p></div><span className="history-badge"><Activity size={17}/>{toFa(data.activity.length)} رویداد</span></div><ActivityList items={data.activity}/>{!data.activity.length && <EmptyState icon="✨" title="هنوز گزارشی نداریم" text="با ثبت اولین کار، اینجا پر از خبرهای خوب می‌شود."/>}</section></>}
-        {tab === 'تنظیمات' && <><PageHeading title="تنظیمات و پشتیبان" subtitle="نرخ جایزه را تغییر دهید و اطلاعات خانواده را مدیریت کنید."/><div className="settings-grid"><section className="panel setting-card"><div className="setting-icon green"><Coins size={23}/></div><h3>ارزش هر امتیاز</h3><p>به‌ازای هر امتیاز، چند تومان جایزه در نظر گرفته شود؟</p><label className="settings-rate-label">تومان برای هر امتیاز<div className="number-input"><input type="number" min="1" max="10000000" value={data.pointsToToman} onChange={event => { const rate = Number(event.target.value); if (rate > 0) setData(current => ({ ...current, pointsToToman: rate })); }}/><span>تومان</span></div></label><div className="setting-example"><span>مثال: ۱۰ امتیاز برابر است با</span><b>{toman(10, data.pointsToToman)}</b></div></section><section className="panel setting-card"><div className="setting-icon violet"><Download size={22}/></div><h3>پشتیبان‌گیری</h3><p>نسخه‌ی پشتیبان را نگه دارید تا اطلاعات بچه‌ها، کارها و امتیازها محفوظ بماند.</p><button className="primary-btn" onClick={exportData}><Download size={18}/> دریافت فایل پشتیبان</button><label className="import-label"><FileText size={17}/> بازیابی از فایل پشتیبان<input type="file" accept="application/json,.json" onChange={event => { void importData(event.target.files?.[0]); event.target.value = ''; }}/></label></section></div><section className="panel family-note"><ShieldCheck size={23}/><div><b>اطلاعات روی دستگاه شما می‌ماند</b><p>برنامه حساب کاربری یا همگام‌سازی ابری ندارد. برای انتقال اطلاعات به دستگاه دیگر، از پشتیبان‌گیری استفاده کنید.</p></div></section></>}
+        {tab === 'تنظیمات' && <><PageHeading title="تنظیمات و پشتیبان" subtitle="نرخ جایزه، همگام‌سازی گوشی‌ها و پشتیبان را مدیریت کنید."/><CloudSettings config={firebaseConfig} status={cloudStatus} user={cloudUser} message={cloudMessage} onSaveConfig={saveCloudConfiguration} onRegister={registerCloudAccount} onLogin={loginCloudAccount} onLogout={logoutCloudAccount}/><div className="settings-grid"><section className="panel setting-card"><div className="setting-icon green"><Coins size={23}/></div><h3>ارزش هر امتیاز</h3><p>به‌ازای هر امتیاز، چند تومان جایزه در نظر گرفته شود؟</p><label className="settings-rate-label">تومان برای هر امتیاز<div className="number-input"><input type="number" min="1" max="10000000" value={data.pointsToToman} onChange={event => { const rate = Number(event.target.value); if (rate > 0) setData(current => ({ ...current, pointsToToman: rate })); }}/><span>تومان</span></div></label><div className="setting-example"><span>مثال: ۱۰ امتیاز برابر است با</span><b>{toman(10, data.pointsToToman)}</b></div></section><section className="panel setting-card"><div className="setting-icon violet"><Download size={22}/></div><h3>پشتیبان‌گیری</h3><p>نسخه‌ی پشتیبان را نگه دارید تا اطلاعات بچه‌ها، کارها و امتیازها محفوظ بماند.</p><button className="primary-btn" onClick={exportData}><Download size={18}/> دریافت فایل پشتیبان</button><label className="import-label"><FileText size={17}/> بازیابی از فایل پشتیبان<input type="file" accept="application/json,.json" onChange={event => { void importData(event.target.files?.[0]); event.target.value = ''; }}/></label></section></div><section className="panel family-note"><ShieldCheck size={23}/><div><b>همگام‌سازی در دستگاه‌های خانواده</b><p>پس از اتصال Firebase، تغییرات روی گوشی‌های واردشده با همان حساب به‌صورت زنده همگام می‌شوند؛ بدون اتصال، نسخه‌ی محلی و پشتیبان شما محفوظ می‌ماند.</p></div></section></>}
         <footer className="footer"><span>ساخته‌شده با <Heart size={14} fill="currentColor"/> برای روزهای بهتر خانواده</span><span>ستاره · نسخه‌ی ۲.۰</span></footer>
       </div>
     </main>

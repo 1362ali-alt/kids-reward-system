@@ -1,0 +1,9 @@
+rules_version = '2';
+service cloud.firestore {
+  match /databases/{database}/documents {
+    // Each family account can read and write only its own shared family document.
+    match /families/{familyId} {
+      allow read, write: if request.auth != null && request.auth.uid == familyId;
+    }
+  }
+}

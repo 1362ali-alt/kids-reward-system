@@ -5,4 +5,5 @@ export default defineConfig({
   plugins: [react()],
   server: { host: '0.0.0.0', allowedHosts: true },
   preview: { host: '0.0.0.0', allowedHosts: true },
+  build: { chunkSizeWarningLimit: 600 },
 });
