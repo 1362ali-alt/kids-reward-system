@@ -1,167 +1,383 @@
-import { useEffect, useState } from 'react';
+import { useEffect, useMemo, useState } from 'react';
 import type { FormEvent, ReactNode } from 'react';
 import {
-  Activity, Bell, Check, CheckCircle2, ChevronLeft,
-  CircleHelp, Coins, Gift, Heart, House, Menu, Plus, Search, Settings,
-  ShieldCheck, Sparkles, Star, Target, Trash2, Trophy, Users, Wallet, X,
+  Activity, Bell, CalendarDays, Check, CheckCircle2, ChevronLeft, CircleHelp,
+  Coins, Download, Dumbbell, FileText, Gift, Heart, House, Languages, Menu,
+  Pencil, Plus, Search, Settings, ShieldCheck, Sparkles, Star, Target, Trash2,
+  Trophy, Users, Wallet, X, BookOpen, BookMarked,
 } from 'lucide-react';
 
-type Child = { id: string; name: string; age: number; avatar: string; color: string; balance: number };
-type Task = { id: string; title: string; childId: string; points: number; status: 'pending' | 'done'; category: string; date: string };
+type Child = { id: string; name: string; birthDate: string; avatar: string; color: string; balance: number };
+type TaskStatus = 'pending' | 'done';
+type Task = { id: string; title: string; childId: string; points: number; status: TaskStatus; category: string; date: string; dayKey: string; routineId?: string };
+type Routine = { id: string; title: string; childId: string; points: number; category: string; active: boolean };
 type Reward = { id: string; title: string; points: number; emoji: string; color: string };
-type ActivityItem = { id: string; text: string; detail: string; time: string; kind: 'earn' | 'spend' | 'task' };
-type Data = { children: Child[]; tasks: Task[]; rewards: Reward[]; activity: ActivityItem[] };
+type ActivityItem = { id: string; text: string; detail: string; time: string; kind: 'earn' | 'spend' | 'task'; points?: number };
+type AppData = { version: number; children: Child[]; tasks: Task[]; routines: Routine[]; rewards: Reward[]; activity: ActivityItem[]; pointsToToman: number; dayKey: string };
+type Tab = 'خانه' | 'فرزندان' | 'کارها' | 'جایزه‌ها' | 'گزارش' | 'تنظیمات';
+type ModalType = 'child' | 'task' | 'routine' | 'reward' | null;
 
-const initialData: Data = {
-  children: [
-    { id: 'c1', name: 'آراد', age: 8, avatar: '🧒🏻', color: 'blue', balance: 125 },
-    { id: 'c2', name: 'رها', age: 5, avatar: '👧🏻', color: 'pink', balance: 85 },
-  ],
-  tasks: [
-    { id: 't1', title: 'مرتب کردن اتاق', childId: 'c1', points: 15, status: 'pending', category: 'خانه', date: 'امروز' },
-    { id: 't2', title: 'مطالعه‌ی کتاب', childId: 'c2', points: 10, status: 'pending', category: 'یادگیری', date: 'امروز' },
-    { id: 't3', title: 'آب دادن به گل‌ها', childId: 'c1', points: 8, status: 'done', category: 'خانه', date: 'دیروز' },
-    { id: 't4', title: 'کمک در چیدن میز', childId: 'c2', points: 12, status: 'done', category: 'خانواده', date: 'دیروز' },
-  ],
-  rewards: [
-    { id: 'r1', title: 'یک ساعت بازی', points: 50, emoji: '🎮', color: 'lavender' },
-    { id: 'r2', title: 'انتخاب دسر', points: 35, emoji: '🍰', color: 'peach' },
-    { id: 'r3', title: 'پارک رفتن', points: 80, emoji: '🛝', color: 'mint' },
-  ],
-  activity: [
-    { id: 'a1', text: 'آب دادن به گل‌ها', detail: 'آراد · ۸ ستاره دریافت کرد', time: 'امروز، ۱۰:۳۰', kind: 'earn' },
-    { id: 'a2', text: 'انتخاب دسر', detail: 'رها · ۳۵ ستاره خرج کرد', time: 'دیروز، ۱۸:۱۵', kind: 'spend' },
-    { id: 'a3', text: 'کمک در چیدن میز', detail: 'رها · ۱۲ ستاره دریافت کرد', time: 'دیروز، ۱۷:۰۰', kind: 'earn' },
-  ],
-};
-
-const storageKey = 'setareh-family-data-v1';
-const loadData = (): Data => {
-  try { const raw = localStorage.getItem(storageKey); return raw ? { ...initialData, ...JSON.parse(raw) } : initialData; }
-  catch { return initialData; }
-};
+const STORAGE_KEY = 'setareh-family-data-v2';
+const MONTHS = ['فروردین', 'اردیبهشت', 'خرداد', 'تیر', 'مرداد', 'شهریور', 'مهر', 'آبان', 'آذر', 'دی', 'بهمن', 'اسفند'];
+const SEED_CHILDREN: Child[] = [
+  { id: 'child-mh', name: 'محمد حسین', birthDate: '1394-01-26', avatar: '👦🏻', color: 'blue', balance: 0 },
+  { id: 'child-mm', name: 'محمد مهدی', birthDate: '1396-12-02', avatar: '🧒🏻', color: 'green', balance: 0 },
+  { id: 'child-z', name: 'زهرا', birthDate: '1405-08-12', avatar: '👶🏻', color: 'pink', balance: 0 },
+];
+const DEFAULT_REWARDS: Reward[] = [
+  { id: 'reward-game', title: 'یک ساعت بازی', points: 50, emoji: '🎮', color: 'lavender' },
+  { id: 'reward-treat', title: 'انتخاب خوراکی', points: 35, emoji: '🍰', color: 'peach' },
+  { id: 'reward-outing', title: 'تفریح خانوادگی', points: 80, emoji: '🛝', color: 'mint' },
+];
 const uid = () => Math.random().toString(36).slice(2, 10);
 const toFa = (n: number) => new Intl.NumberFormat('fa-IR').format(n);
-const dateToday = () => new Intl.DateTimeFormat('fa-IR', { month: 'long', day: 'numeric' }).format(new Date());
-type Tab = 'خانه' | 'بچه‌ها' | 'کارها' | 'جایزه‌ها' | 'گزارش';
+const digitsToLatin = (value: string) => value.replace(/[۰-۹٠-٩]/g, d => String('۰۱۲۳۴۵۶۷۸۹٠١٢٣٤٥٦٧٨٩'.indexOf(d) % 10));
+const jalaliToday = () => {
+  const parts = new Intl.DateTimeFormat('fa-IR-u-ca-persian-nu-latn', { year: 'numeric', month: 'numeric', day: 'numeric' }).formatToParts(new Date());
+  const value = (key: string) => Number(parts.find(part => part.type === key)?.value ?? 0);
+  return { year: value('year'), month: value('month'), day: value('day') };
+};
+const todayKey = () => { const { year, month, day } = jalaliToday(); return `${year}-${String(month).padStart(2, '0')}-${String(day).padStart(2, '0')}`; };
+const todayLabel = () => { const { year, month, day } = jalaliToday(); return `${toFa(day)} ${MONTHS[month - 1]} ${toFa(year)}`; };
+const formatBirthDate = (value: string) => {
+  const match = value.match(/^(\d{4})-(\d{1,2})-(\d{1,2})$/);
+  if (!match) return value;
+  const month = Number(match[2]);
+  return `${toFa(Number(match[3]))} ${MONTHS[month - 1] ?? ''} ${toFa(Number(match[1]))}`;
+};
+const ageLabel = (birthDate: string) => {
+  const parts = birthDate.split('-').map(Number);
+  if (parts.length !== 3 || parts.some(Number.isNaN)) return 'تاریخ تولد ثبت نشده';
+  const now = jalaliToday();
+  let years = now.year - parts[0];
+  if (now.month < parts[1] || (now.month === parts[1] && now.day < parts[2])) years -= 1;
+  return years < 1 ? 'نوزاد' : `${toFa(years)} ساله`;
+};
+const toman = (points: number, rate: number) => `${toFa(points * rate)} تومان`;
+const createRoutineDefaults = (children: Child[]): Routine[] => {
+  const daily = [
+    { title: 'درس و گفت‌وگوی درسی', category: 'درس و گفت‌وگو' },
+    { title: 'تمرین و حفظ زبان انگلیسی', category: 'زبان انگلیسی' },
+    { title: 'حفظ قرآن', category: 'قرآن' },
+    { title: 'ورزش روزانه', category: 'ورزش' },
+  ];
+  return children.flatMap(child => {
+    const age = ageLabel(child.birthDate);
+    if (age === 'نوزاد') return [];
+    return daily.map(item => ({ id: uid(), title: item.title, category: item.category, childId: child.id, points: 1, active: true }));
+  });
+};
+const routineTask = (routine: Routine, day: string): Task => ({
+  id: uid(), routineId: routine.id, title: routine.title, childId: routine.childId,
+  points: routine.points, status: 'pending', category: routine.category, date: todayLabel(), dayKey: day,
+});
+const freshData = (): AppData => {
+  const children = SEED_CHILDREN.map(child => ({ ...child }));
+  const routines = createRoutineDefaults(children);
+  const day = todayKey();
+  return {
+    version: 2,
+    children,
+    routines,
+    tasks: routines.map(routine => routineTask(routine, day)),
+    rewards: DEFAULT_REWARDS.map(reward => ({ ...reward })),
+    activity: [],
+    pointsToToman: 1000,
+    dayKey: day,
+  };
+};
+function loadData(): AppData {
+  const defaults = freshData();
+  try {
+    const raw = localStorage.getItem(STORAGE_KEY);
+    if (!raw) return defaults;
+    const saved = JSON.parse(raw) as Partial<AppData>;
+    if (saved.version !== 2 || !Array.isArray(saved.children)) return defaults;
+    const children = saved.children;
+    const routines = Array.isArray(saved.routines) ? saved.routines : createRoutineDefaults(children);
+    let tasks = Array.isArray(saved.tasks) ? saved.tasks : [];
+    const day = todayKey();
+    if (saved.dayKey !== day) {
+      tasks = tasks.filter(task => !task.routineId || task.status === 'done').map(task => task.status === 'pending' ? { ...task, dayKey: day, date: todayLabel() } : task);
+      tasks = [...tasks, ...routines.filter(routine => routine.active).map(routine => routineTask(routine, day))];
+    }
+    return {
+      ...defaults,
+      ...saved,
+      children,
+      routines,
+      tasks,
+      rewards: Array.isArray(saved.rewards) ? saved.rewards : defaults.rewards,
+      activity: Array.isArray(saved.activity) ? saved.activity : [],
+      pointsToToman: Number(saved.pointsToToman) > 0 ? Number(saved.pointsToToman) : 1000,
+      dayKey: day,
+    } as AppData;
+  } catch {
+    return defaults;
+  }
+}
 
 function App() {
-  const [data, setData] = useState<Data>(loadData);
+  const [data, setData] = useState<AppData>(loadData);
   const [tab, setTab] = useState<Tab>('خانه');
-  const [modal, setModal] = useState<'child' | 'task' | 'reward' | null>(null);
+  const [modal, setModal] = useState<ModalType>(null);
+  const [editing, setEditing] = useState<Child | Task | Routine | Reward | undefined>();
   const [toast, setToast] = useState('');
-  const [search, setSearch] = useState('');
   const [selectedChild, setSelectedChild] = useState('all');
+  const [showTaskHistory, setShowTaskHistory] = useState(false);
   const [mobileMenu, setMobileMenu] = useState(false);
-  useEffect(() => { localStorage.setItem(storageKey, JSON.stringify(data)); }, [data]);
-  useEffect(() => { if (!toast) return; const id = window.setTimeout(() => setToast(''), 2800); return () => clearTimeout(id); }, [toast]);
+  const [query, setQuery] = useState('');
+  useEffect(() => { localStorage.setItem(STORAGE_KEY, JSON.stringify(data)); }, [data]);
+  useEffect(() => { if (!toast) return; const id = window.setTimeout(() => setToast(''), 3200); return () => clearTimeout(id); }, [toast]);
+  useEffect(() => {
+    const refreshDay = () => setData(current => {
+      const day = todayKey();
+      if (current.dayKey === day) return current;
+      const carry = current.tasks.filter(task => !task.routineId || task.status === 'done').map(task => task.status === 'pending' ? { ...task, dayKey: day, date: todayLabel() } : task);
+      return { ...current, dayKey: day, tasks: [...carry, ...current.routines.filter(routine => routine.active).map(routine => routineTask(routine, day))] };
+    });
+    const timer = window.setInterval(refreshDay, 60_000);
+    window.addEventListener('focus', refreshDay);
+    return () => { window.clearInterval(timer); window.removeEventListener('focus', refreshDay); };
+  }, []);
 
-  const pending = data.tasks.filter(t => t.status === 'pending');
-  const finished = data.tasks.filter(t => t.status === 'done');
+  const todayTasks = useMemo(() => data.tasks.filter(task => task.dayKey === todayKey()), [data.tasks]);
+  const pending = todayTasks.filter(task => task.status === 'pending');
+  const finished = todayTasks.filter(task => task.status === 'done');
   const totalPoints = data.children.reduce((sum, child) => sum + child.balance, 0);
-  const filteredTasks = data.tasks.filter(t => (selectedChild === 'all' || t.childId === selectedChild) && t.title.includes(search));
+  const filteredTasks = data.tasks.filter(task => (showTaskHistory || task.dayKey === todayKey()) && (selectedChild === 'all' || task.childId === selectedChild) && task.title.includes(query));
+  const navItems: { label: Tab; icon: typeof House }[] = [
+    { label: 'خانه', icon: House }, { label: 'فرزندان', icon: Users }, { label: 'کارها', icon: CheckCircle2 },
+    { label: 'جایزه‌ها', icon: Gift }, { label: 'گزارش', icon: Activity }, { label: 'تنظیمات', icon: Settings },
+  ];
+  const openModal = (type: ModalType, item?: Child | Task | Routine | Reward) => { setEditing(item); setModal(type); };
+  const closeModal = () => { setModal(null); setEditing(undefined); };
+  const setPage = (next: Tab) => { setTab(next); setMobileMenu(false); };
 
   const approveTask = (task: Task) => {
-    const child = data.children.find(c => c.id === task.childId);
-    if (!child) return;
+    const child = data.children.find(item => item.id === task.childId);
+    if (!child || task.status === 'done') return;
     setData(current => ({
       ...current,
-      children: current.children.map(c => c.id === child.id ? { ...c, balance: c.balance + task.points } : c),
-      tasks: current.tasks.map(t => t.id === task.id ? { ...t, status: 'done' } : t),
-      activity: [{ id: uid(), text: task.title, detail: `${child.name} · ${toFa(task.points)} ستاره دریافت کرد`, time: `امروز، ${new Intl.DateTimeFormat('fa-IR', { hour: '2-digit', minute: '2-digit' }).format(new Date())}`, kind: 'earn' }, ...current.activity],
+      children: current.children.map(item => item.id === child.id ? { ...item, balance: item.balance + task.points } : item),
+      tasks: current.tasks.map(item => item.id === task.id ? { ...item, status: 'done' } : item),
+      activity: [{ id: uid(), text: task.title, detail: `${child.name} · ${toFa(task.points)} امتیاز گرفت`, points: task.points, time: `امروز، ${new Intl.DateTimeFormat('fa-IR', { hour: '2-digit', minute: '2-digit' }).format(new Date())}`, kind: 'earn' }, ...current.activity],
     }));
-    setToast(`آفرین به ${child.name}! ${toFa(task.points)} ستاره به حسابش اضافه شد.`);
+    setToast(`آفرین به ${child.name}! ${toFa(task.points)} امتیاز (${toman(task.points, data.pointsToToman)}) به حسابش اضافه شد.`);
   };
-
-  const redeem = (reward: Reward, child: Child) => {
-    if (child.balance < reward.points) { setToast(`ستاره‌های ${child.name} برای این جایزه کافی نیست.`); return; }
+  const redeemReward = (reward: Reward, child: Child) => {
+    if (child.balance < reward.points) { setToast(`امتیازهای ${child.name} برای این جایزه کافی نیست.`); return; }
     setData(current => ({
       ...current,
-      children: current.children.map(c => c.id === child.id ? { ...c, balance: c.balance - reward.points } : c),
-      activity: [{ id: uid(), text: reward.title, detail: `${child.name} · ${toFa(reward.points)} ستاره خرج کرد`, time: `امروز، ${new Intl.DateTimeFormat('fa-IR', { hour: '2-digit', minute: '2-digit' }).format(new Date())}`, kind: 'spend' }, ...current.activity],
+      children: current.children.map(item => item.id === child.id ? { ...item, balance: item.balance - reward.points } : item),
+      activity: [{ id: uid(), text: reward.title, detail: `${child.name} · ${toFa(reward.points)} امتیاز خرج کرد`, points: reward.points, time: `امروز، ${new Intl.DateTimeFormat('fa-IR', { hour: '2-digit', minute: '2-digit' }).format(new Date())}`, kind: 'spend' }, ...current.activity],
     }));
-    setToast(`جایزه‌ی «${reward.title}» برای ${child.name} ثبت شد!`);
+    setToast(`جایزه‌ی «${reward.title}» برای ${child.name} ثبت شد.`);
+  };
+  const saveChild = (input: Omit<Child, 'id' | 'balance' | 'color'>, id?: string) => {
+    if (id) {
+      setData(current => {
+        const updated = current.children.find(child => child.id === id);
+        if (!updated) return current;
+        const nextChild = { ...updated, ...input };
+        const isNewborn = ageLabel(nextChild.birthDate) === 'نوزاد';
+        const defaults = !isNewborn && !current.routines.some(routine => routine.childId === id) ? createRoutineDefaults([nextChild]) : [];
+        const routines = [...current.routines.map(routine => routine.childId === id && isNewborn ? { ...routine, active: false } : routine), ...defaults];
+        const tasks = defaults.length ? [...defaults.map(routine => routineTask(routine, todayKey())), ...current.tasks] : current.tasks;
+        return { ...current, children: current.children.map(child => child.id === id ? nextChild : child), routines, tasks };
+      });
+      setToast('اطلاعات فرزند ویرایش شد.');
+    } else {
+      const child: Child = { id: uid(), ...input, color: 'blue', balance: 0 };
+      const routines = createRoutineDefaults([child]);
+      setData(current => ({ ...current, children: [...current.children, child], routines: [...current.routines, ...routines], tasks: [...routines.map(routine => routineTask(routine, todayKey())), ...current.tasks] }));
+      setToast(`${child.name} به خانواده اضافه شد.`);
+    }
+    closeModal();
+  };
+  const removeChild = (child: Child) => {
+    if (!window.confirm(`«${child.name}» و کارهای روزانه‌ی مربوط به او حذف شود؟ امتیاز موجودی هم پاک می‌شود.`)) return;
+    setData(current => ({ ...current, children: current.children.filter(item => item.id !== child.id), routines: current.routines.filter(item => item.childId !== child.id), tasks: current.tasks.filter(item => item.childId !== child.id) }));
+    setToast(`${child.name} حذف شد.`);
+  };
+  const saveTask = (input: Omit<Task, 'id' | 'status' | 'date' | 'dayKey' | 'routineId'>, id?: string) => {
+    if (id) setData(current => ({ ...current, tasks: current.tasks.map(task => task.id === id ? { ...task, ...input } : task) }));
+    else setData(current => ({ ...current, tasks: [{ id: uid(), ...input, status: 'pending', date: todayLabel(), dayKey: todayKey() }, ...current.tasks] }));
+    setToast(id ? 'کار ویرایش شد.' : 'کار تازه برای امروز ثبت شد.'); closeModal();
+  };
+  const removeTask = (task: Task) => {
+    if (!window.confirm(`کار «${task.title}» حذف شود؟`)) return;
+    setData(current => ({ ...current, tasks: current.tasks.filter(item => item.id !== task.id) }));
+    setToast('کار حذف شد.');
+  };
+  const saveRoutine = (input: Omit<Routine, 'id' | 'active'>, id?: string) => {
+    if (id) {
+      setData(current => ({
+        ...current,
+        routines: current.routines.map(routine => routine.id === id ? { ...routine, ...input } : routine),
+        tasks: current.tasks.map(task => task.routineId === id && task.status === 'pending' && task.dayKey === todayKey() ? { ...task, ...input } : task),
+      }));
+      setToast('برنامه‌ی روزانه ویرایش شد.');
+    } else {
+      const routine: Routine = { id: uid(), ...input, active: true };
+      setData(current => ({ ...current, routines: [...current.routines, routine], tasks: [routineTask(routine, todayKey()), ...current.tasks] }));
+      setToast('برنامه‌ی روزانه اضافه شد.');
+    }
+    closeModal();
+  };
+  const toggleRoutine = (routine: Routine) => {
+    setData(current => {
+      const enabled = !routine.active;
+      const hasTodayTask = current.tasks.some(task => task.routineId === routine.id && task.dayKey === todayKey());
+      const tasks = enabled && !hasTodayTask ? [routineTask({ ...routine, active: true }, todayKey()), ...current.tasks] : current.tasks;
+      return { ...current, routines: current.routines.map(item => item.id === routine.id ? { ...item, active: enabled } : item), tasks };
+    });
+    setToast(routine.active ? 'این برنامه از فردا متوقف می‌شود.' : 'برنامه فعال شد و کار امروز هم اضافه شد.');
+  };
+  const removeRoutine = (routine: Routine) => {
+    if (!window.confirm(`برنامه‌ی تکرارشونده‌ی «${routine.title}» حذف شود؟`)) return;
+    setData(current => ({ ...current, routines: current.routines.filter(item => item.id !== routine.id), tasks: current.tasks.filter(task => task.routineId !== routine.id) }));
+    setToast('برنامه‌ی روزانه حذف شد.');
+  };
+  const saveReward = (title: string, points: number, emoji: string, id?: string) => {
+    if (id) setData(current => ({ ...current, rewards: current.rewards.map(reward => reward.id === id ? { ...reward, title, points, emoji } : reward) }));
+    else setData(current => ({ ...current, rewards: [...current.rewards, { id: uid(), title, points, emoji, color: 'lavender' }] }));
+    setToast(id ? 'جایزه ویرایش شد.' : 'جایزه‌ی تازه ساخته شد.'); closeModal();
+  };
+  const removeReward = (reward: Reward) => {
+    if (!window.confirm(`جایزه‌ی «${reward.title}» حذف شود؟`)) return;
+    setData(current => ({ ...current, rewards: current.rewards.filter(item => item.id !== reward.id) }));
+    setToast('جایزه حذف شد.');
+  };
+  const exportData = () => {
+    const blob = new Blob([JSON.stringify(data, null, 2)], { type: 'application/json' });
+    const url = URL.createObjectURL(blob);
+    const link = document.createElement('a'); link.href = url; link.download = 'setareh-backup.json'; link.click(); URL.revokeObjectURL(url);
+    setToast('نسخه‌ی پشتیبان دریافت شد.');
+  };
+  const importData = async (file?: File) => {
+    if (!file) return;
+    try {
+      const imported = JSON.parse(await file.text()) as AppData;
+      if (imported.version !== 2 || !Array.isArray(imported.children) || !Array.isArray(imported.tasks) || !Array.isArray(imported.routines)) throw new Error('invalid file');
+      if (!window.confirm('اطلاعات فعلی با نسخه‌ی پشتیبان جایگزین شود؟')) return;
+      const day = todayKey();
+      const tasks = imported.dayKey === day
+        ? imported.tasks
+        : [...imported.tasks.filter(task => !task.routineId || task.status === 'done').map(task => task.status === 'pending' ? { ...task, dayKey: day, date: todayLabel() } : task), ...imported.routines.filter(routine => routine.active).map(routine => routineTask(routine, day))];
+      setData({ ...freshData(), ...imported, tasks, pointsToToman: Number(imported.pointsToToman) || 1000, dayKey: day });
+      setToast('نسخه‌ی پشتیبان بازیابی شد.');
+    } catch { setToast('فایل پشتیبان معتبر نیست.'); }
   };
 
-  const addChild = (name: string, age: number, avatar: string) => {
-    const newChild: Child = { id: uid(), name, age, avatar, color: data.children.length % 2 ? 'pink' : 'blue', balance: 0 };
-    setData(current => ({ ...current, children: [...current.children, newChild] }));
-    setToast(`${name} با موفقیت به خانواده اضافه شد.`); setModal(null);
-  };
-  const addTask = (title: string, childId: string, points: number, category: string) => {
-    setData(current => ({ ...current, tasks: [{ id: uid(), title, childId, points, status: 'pending', category, date: 'امروز' }, ...current.tasks] }));
-    setToast('کار جدید به فهرست اضافه شد.'); setModal(null);
-  };
-  const addReward = (title: string, points: number, emoji: string) => {
-    setData(current => ({ ...current, rewards: [...current.rewards, { id: uid(), title, points, emoji, color: 'lavender' }] }));
-    setToast('جایزه‌ی تازه آماده شد!'); setModal(null);
-  };
-  const deleteReward = (id: string) => { setData(current => ({ ...current, rewards: current.rewards.filter(r => r.id !== id) })); setToast('جایزه حذف شد.'); };
-  const navItems: { label: Tab; icon: typeof House }[] = [
-    { label: 'خانه', icon: House }, { label: 'بچه‌ها', icon: Users }, { label: 'کارها', icon: CheckCircle2 }, { label: 'جایزه‌ها', icon: Gift }, { label: 'گزارش', icon: Activity },
-  ];
+  const dashboard = <>
+    <section className="welcome-row"><div><div className="eyebrow"><span className="eyebrow-dot"/> فضای گرم خانواده‌ی شما</div><h1>سلام، روزتون پر از <em>لبخند!</em> <span>☀️</span></h1><p>برای محمد حسین، محمد مهدی و زهرا یک روز پربار و شاد بسازیم.</p></div><button className="primary-btn" onClick={() => openModal('task')}><Plus size={18}/> تعریف کار</button></section>
+    <section className="hero-card"><div className="hero-copy"><span className="hero-pill"><Sparkles size={14}/> رشد با مهربانی</span><h2>هر تلاش کوچیک،<br/>یک درخشش بزرگه! <span>✨</span></h2><p>یک امتیاز برابر است با {toFa(data.pointsToToman)} تومان جایزه.</p><div className="hero-stats"><div><strong>{toFa(finished.length)}</strong><span>کار انجام‌شده امروز</span></div><i/><div><strong>{toFa(totalPoints)}</strong><span>امتیاز بچه‌ها</span></div></div></div><div className="hero-art"><div className="orbit orbit-one"/><div className="orbit orbit-two"/><div className="sun-blob">🌟</div><span className="float-star star-one">✦</span><span className="float-star star-two">✧</span><span className="float-star star-three">✦</span><span className="art-sparkle">✧</span></div><div className="hero-decoration">✿</div></section>
+    <section className="stats-grid"><StatCard icon={<CheckCircle2/>} label="کارهای امروز در انتظار تأیید" value={toFa(pending.length)} note={pending.length ? 'با تأیید، امتیاز اضافه می‌شود' : 'همه‌چیز مرتبه'} tone="amber"/><StatCard icon={<Coins/>} label="موجودی کل امتیازها" value={toFa(totalPoints)} note={toman(totalPoints, data.pointsToToman)} tone="green"/><StatCard icon={<Trophy/>} label="جایزه‌های آماده" value={toFa(data.rewards.length)} note="برای انگیزه‌ی بیشتر" tone="violet"/><StatCard icon={<Target/>} label="اعضای خانواده" value={toFa(data.children.length)} note="هر روز یک قدم بهتر" tone="blue"/></section>
+    <div className="dashboard-grid"><section className="panel pending-panel"><div className="section-head"><div><h3>کارهای امروز <span className="small-count">{toFa(pending.length)}</span></h3><p>پس از انجام کار، والد امتیاز را تأیید می‌کند.</p></div><button className="text-link" onClick={() => setPage('کارها')}>مدیریت کارها <ChevronLeft size={16}/></button></div>{pending.length ? <div className="task-list">{pending.slice(0, 5).map(task => <TaskRow key={task.id} task={task} child={data.children.find(child => child.id === task.childId)} onApprove={() => approveTask(task)} onEdit={() => openModal(task.routineId ? 'routine' : 'task', task.routineId ? data.routines.find(r => r.id === task.routineId) : task)} onDelete={() => removeTask(task)} rate={data.pointsToToman}/>)}</div> : <EmptyState icon="🎉" title="کار منتظر تأیید نداریم" text="برنامه‌ی فردا آماده است؛ یک کار دیگر هم می‌توانید اضافه کنید." button="تعریف کار" onClick={() => openModal('task')}/>}</section>
+      <section className="panel children-panel"><div className="section-head"><div><h3>بچه‌های خانواده</h3><p>امتیاز و جایزه‌ی هر نفر.</p></div><button className="round-add" onClick={() => openModal('child')} aria-label="افزودن فرزند"><Plus size={20}/></button></div><div className="child-list">{data.children.map(child => <ChildRow key={child.id} child={child} pointsToToman={data.pointsToToman}/>)}</div><button className="soft-btn full-btn" onClick={() => setPage('فرزندان')}>مدیریت فرزندان <ChevronLeft size={15}/></button></section>
+      <section className="panel activity-panel"><div className="section-head"><div><h3>تازه‌های خانواده</h3><p>تلاش‌ها و جایزه‌های اخیر.</p></div><button className="text-link" onClick={() => setPage('گزارش')}>گزارش کامل <ChevronLeft size={16}/></button></div><ActivityList items={data.activity.slice(0, 5)}/>{!data.activity.length && <p className="empty-inline">با تأیید اولین کار، گزارش اینجا نمایش داده می‌شود.</p>}</section>
+      <section className="quote-card"><div className="quote-top"><span className="quote-icon">💛</span><span className="quote-label">یادآوری امروز</span></div><blockquote>«تشویق، تلاش بچه‌ها را به عادت‌های قشنگ تبدیل می‌کند.»</blockquote><div className="quote-bottom"><span/> یک جمله‌ی مهربان، روزی به‌یادماندنی می‌سازد <span>✦</span></div><div className="quote-decoration">“</div></section></div>
+  </>;
 
   return <div className="app-shell" dir="rtl">
     <aside className={`sidebar ${mobileMenu ? 'show' : ''}`}>
-      <div className="brand"><span className="brand-mark"><Sparkles size={21}/></span><div><strong>ستاره</strong><small>با هم رشد می‌کنیم</small></div><button className="icon-btn close-menu" onClick={() => setMobileMenu(false)} aria-label="بستن منو"><X size={18}/></button></div>
-      <div className="family-card"><div className="family-avatar">🏡</div><div><strong>خانواده‌ی ما</strong><span>{toFa(data.children.length)} عضو فعال</span></div><ChevronLeft size={16} className="muted"/></div>
-      <div className="menu-caption">منوی اصلی</div>
-      <nav className="side-nav">{navItems.map(({ label, icon: Icon }) => <button key={label} className={`nav-item ${tab === label ? 'active' : ''}`} onClick={() => { setTab(label); setMobileMenu(false); }}><Icon size={19}/><span>{label}</span>{label === 'کارها' && pending.length > 0 && <b className="nav-count">{toFa(pending.length)}</b>}</button>)}</nav>
-      <div className="sidebar-spacer"/>
-      <div className="tip-card"><div className="tip-icon"><Heart size={17}/></div><b>یک قدم کوچک، یک عادت بزرگ</b><p>تشویق‌های کوچک امروز، اعتمادبه‌نفس بزرگ فرداست.</p><div className="tip-dots"><i/><i/><i/></div></div>
-      <button className="nav-item settings-link" onClick={() => setToast('همه‌ی اطلاعات فقط روی همین دستگاه ذخیره می‌شود.')}><Settings size={18}/><span>تنظیمات</span></button>
-      <div className="user-mini"><div className="parent-avatar">👨🏻‍👩🏻‍👧🏻‍👦🏻</div><div><b>والد خانواده</b><small>مدیر حساب</small></div><button className="icon-btn" onClick={() => setToast('خوشحالیم که با ستاره همراهی!')} aria-label="راهنما"><CircleHelp size={18}/></button></div>
+      <div className="brand"><span className="brand-mark"><Sparkles size={22}/></span><div><strong>ستاره</strong><small>با هم رشد می‌کنیم</small></div><button className="icon-btn close-menu" onClick={() => setMobileMenu(false)} aria-label="بستن منو"><X size={20}/></button></div>
+      <div className="family-card"><div className="family-avatar">🏡</div><div><strong>خانواده‌ی ما</strong><span>{toFa(data.children.length)} عضو</span></div><ChevronLeft size={18} className="muted"/></div>
+      <div className="menu-caption">منوی اصلی</div><nav className="side-nav">{navItems.map(({ label, icon: Icon }) => <button key={label} className={`nav-item ${tab === label ? 'active' : ''}`} onClick={() => setPage(label)}><Icon size={20}/><span>{label}</span>{label === 'کارها' && pending.length > 0 && <b className="nav-count">{toFa(pending.length)}</b>}</button>)}</nav>
+      <div className="sidebar-spacer"/><div className="tip-card"><div className="tip-icon"><Heart size={18}/></div><b>یک قدم کوچک، یک عادت بزرگ</b><p>تشویق‌های کوچک امروز، اعتمادبه‌نفس بزرگ فرداست.</p><div className="tip-dots"><i/><i/><i/></div></div>
+      <button className="nav-item settings-link" onClick={() => setPage('تنظیمات')}><Settings size={20}/><span>تنظیمات و پشتیبان</span></button>
+      <div className="user-mini"><div className="parent-avatar">👨🏻‍👩🏻‍👧🏻‍👦🏻</div><div><b>والد خانواده</b><small>اطلاعات روی همین دستگاه</small></div><button className="icon-btn" onClick={() => setToast('از منوی تنظیمات می‌توانید نرخ امتیاز را تغییر دهید و پشتیبان بگیرید.')} aria-label="راهنما"><CircleHelp size={19}/></button></div>
     </aside>
     {mobileMenu && <button aria-label="بستن منو" className="scrim" onClick={() => setMobileMenu(false)}/>}
-
     <main className="main-area">
-      <header className="topbar"><button className="icon-btn mobile-menu-btn" onClick={() => setMobileMenu(true)} aria-label="باز کردن منو"><Menu size={21}/></button><div className="breadcrumbs"><span>خانواده‌ی ما</span><ChevronLeft size={14}/><b>{tab}</b></div><div className="top-actions"><span className="date-chip">{dateToday()}</span><button className="icon-btn notification" aria-label="اعلان‌ها" onClick={() => setToast(pending.length ? `${toFa(pending.length)} کار منتظر تأیید شماست.` : 'فعلاً اعلان تازه‌ای ندارید.')}><Bell size={19}/>{pending.length > 0 && <i/>}</button><div className="top-avatar">👨🏻</div></div></header>
+      <header className="topbar"><div className="topbar-main"><button className="icon-btn mobile-menu-btn" onClick={() => setMobileMenu(true)} aria-label="باز کردن منو"><Menu size={23}/></button><div className="breadcrumbs"><span>خانواده‌ی ما</span><ChevronLeft size={15}/><b>{tab}</b></div><div className="top-actions"><span className="date-chip"><CalendarDays size={15}/>{todayLabel()}</span><button className="icon-btn notification" aria-label="کارهای در انتظار" onClick={() => { setPage('کارها'); setToast(pending.length ? `${toFa(pending.length)} کار منتظر تأیید شماست.` : 'کار تأییدنشده‌ای برای امروز ندارید.'); }}><Bell size={20}/>{pending.length > 0 && <i/>}</button><div className="top-avatar">👨🏻</div></div></div><nav className="top-tabs" aria-label="منوی اصلی">{navItems.map(({ label, icon: Icon }) => <button key={label} className={tab === label ? 'active' : ''} onClick={() => setPage(label)}><Icon size={18}/><span>{label}</span></button>)}</nav></header>
       <div className="page-content">
-        {tab === 'خانه' && <>
-          <section className="welcome-row"><div><div className="eyebrow"><span className="eyebrow-dot"/> فضای گرم خانواده‌ی شما</div><h1>سلام، روزتون پر از <em>لبخند!</em> <span>☀️</span></h1><p>با یک تشویق کوچک، روز بچه‌ها رو قشنگ‌تر کنیم.</p></div><button className="primary-btn" onClick={() => setModal('task')}><Plus size={18}/> تعریف کار جدید</button></section>
-          <section className="hero-card"><div className="hero-copy"><span className="hero-pill"><Sparkles size={13}/> هفته‌ی پربار شما</span><h2>قهرمان‌های کوچولوی<br/>خانواده درخشیدن! <span>✨</span></h2><p>بچه‌ها این هفته با انجام کارهای خوب، کلی ستاره جمع کردن.</p><div className="hero-stats"><div><strong>{toFa(finished.length)}</strong><span>کار انجام‌شده</span></div><i/><div><strong>{toFa(totalPoints)}</strong><span>ستاره‌ی خانواده</span></div></div></div><div className="hero-art"><div className="orbit orbit-one"/><div className="orbit orbit-two"/><div className="sun-blob">🌟</div><span className="float-star star-one">✦</span><span className="float-star star-two">✧</span><span className="float-star star-three">✦</span><span className="art-sparkle">✧</span></div><div className="hero-decoration">✿</div></section>
-          <section className="stats-grid"><StatCard icon={<CheckCircle2/>} label="کارهای منتظر تأیید" value={toFa(pending.length)} note={pending.length ? 'وقت یک تشویق قشنگه!' : 'همه‌چیز مرتبه'} tone="amber"/><StatCard icon={<Coins/>} label="ستاره‌های جمع‌شده" value={toFa(totalPoints)} note="در حساب بچه‌ها" tone="green"/><StatCard icon={<Trophy/>} label="جایزه‌های قابل دریافت" value={toFa(data.rewards.length)} note="برای انگیزه‌ی بیشتر" tone="violet"/><StatCard icon={<Target/>} label="اعضای خانواده" value={toFa(data.children.length)} note="هر روز یک قدم بهتر" tone="blue"/></section>
-          <div className="dashboard-grid"><section className="panel pending-panel"><div className="section-head"><div><h3>کارهای در انتظار <span className="small-count">{toFa(pending.length)}</span></h3><p>با تأیید شما، ستاره‌ها به حسابشون اضافه می‌شه.</p></div><button className="text-link" onClick={() => setTab('کارها')}>همه‌ی کارها <ChevronLeft size={15}/></button></div>{pending.length ? <div className="task-list">{pending.slice(0, 4).map(task => <TaskRow key={task.id} task={task} child={data.children.find(c => c.id === task.childId)} onApprove={() => approveTask(task)}/>)}</div> : <EmptyState icon="🎉" title="همه‌ی کارها تأیید شدن!" text="یک کار تازه تعریف کنید تا ماجراجویی ادامه پیدا کنه." button="تعریف کار" onClick={() => setModal('task')}/>}</section>
-          <section className="panel children-panel"><div className="section-head"><div><h3>ستاره‌های کوچولوی شما</h3><p>هر ستاره، یک قدم رو به جلوست.</p></div><button className="round-add" onClick={() => setModal('child')} aria-label="افزودن فرزند"><Plus size={18}/></button></div><div className="child-list">{data.children.map(child => <ChildRow key={child.id} child={child}/>)}</div><button className="soft-btn full-btn" onClick={() => setTab('بچه‌ها')}>دیدن صفحه‌ی بچه‌ها <ChevronLeft size={15}/></button></section>
-          <section className="panel activity-panel"><div className="section-head"><div><h3>تازه‌های خانواده</h3><p>لحظه‌های خوب رو مرور کنیم.</p></div><button className="text-link" onClick={() => setTab('گزارش')}>گزارش کامل <ChevronLeft size={15}/></button></div><ActivityList items={data.activity.slice(0, 4)}/></section>
-          <section className="quote-card"><div className="quote-top"><span className="quote-icon">💛</span><span className="quote-label">یادآوری امروز</span></div><blockquote>«بچه‌ها با تشویق شکوفا می‌شن، نه با کامل بودن.»</blockquote><div className="quote-bottom"><span/> یک جمله‌ی مهربون، روزی به‌یادماندنی می‌سازه <span>✦</span></div><div className="quote-decoration">“</div></section></div>
-        </>}
-        {tab === 'بچه‌ها' && <><PageHeading title="ستاره‌های خانواده" subtitle="پیشرفت و موجودی ستاره‌های هر کدوم رو ببینید." action="افزودن فرزند" onAction={() => setModal('child')}/><section className="children-cards">{data.children.map((child, index) => <div className="child-profile panel" key={child.id}><div className={`profile-avatar ${child.color}`}>{child.avatar}</div><div className="profile-name"><h3>{child.name}</h3><span>{toFa(child.age)} ساله · عضو خانواده</span></div><div className="profile-balance"><Coins size={17}/><strong>{toFa(child.balance)}</strong><span>ستاره</span></div><div className="profile-progress"><div><span>کارهای انجام‌شده</span><b>{toFa(data.tasks.filter(t => t.childId === child.id && t.status === 'done').length)} کار</b></div><div className="progress-track"><i style={{ width: `${Math.min(100, data.tasks.filter(t => t.childId === child.id && t.status === 'done').length * 18 + 16)}%` }}/></div></div><div className="profile-footer"><span>{index ? 'رنگ مورد علاقه: صورتی' : 'رنگ مورد علاقه: آبی'}</span><button className="text-link" onClick={() => { setSelectedChild(child.id); setTab('کارها'); }}>دیدن کارها <ChevronLeft size={14}/></button></div></div>)}<button className="add-child-card" onClick={() => setModal('child')}><span><Plus size={22}/></span><b>یک ستاره‌ی تازه اضافه کن</b><small>پروفایل فرزند جدید بسازید</small></button></section><section className="panel family-note"><ShieldCheck size={20}/><div><b>فضای امن و مخصوص خانواده</b><p>اطلاعات فرزندان شما روی همین دستگاه نگهداری می‌شود و به جایی ارسال نمی‌شود.</p></div></section></>}
-        {tab === 'کارها' && <><PageHeading title="کارهای خوب" subtitle="کارها رو تعریف کنید و بعد از انجام، ستاره‌ها رو تأیید کنید." action="تعریف کار جدید" onAction={() => setModal('task')}/><section className="panel list-page"><div className="filter-bar"><div className="search-box"><Search size={17}/><input value={search} onChange={e => setSearch(e.target.value)} placeholder="جست‌وجوی کار..."/></div><select value={selectedChild} onChange={e => setSelectedChild(e.target.value)}><option value="all">همه‌ی بچه‌ها</option>{data.children.map(c => <option value={c.id} key={c.id}>{c.name}</option>)}</select><div className="filter-count">{toFa(filteredTasks.length)} کار</div></div><div className="task-list full-task-list">{filteredTasks.map(task => <TaskRow key={task.id} task={task} child={data.children.find(c => c.id === task.childId)} onApprove={() => approveTask(task)}/>)}</div>{!filteredTasks.length && <EmptyState icon="📝" title="کاری پیدا نشد" text="عبارت دیگری جست‌وجو کنید یا یک کار تازه بسازید." button="تعریف کار" onClick={() => setModal('task')}/>}</section></>}
-        {tab === 'جایزه‌ها' && <><PageHeading title="فروشگاه جایزه‌ها" subtitle="برای تلاش‌های قشنگ، جایزه‌های دوست‌داشتنی در نظر بگیرید." action="افزودن جایزه" onAction={() => setModal('reward')}/><div className="redeem-hint"><Sparkles size={17}/><span>برای ثبت دریافت جایزه، روی دکمه‌ی «انتخاب برای...» بزنید.</span><span className="hint-stars">{toFa(totalPoints)} <Star size={15} fill="currentColor"/></span></div><section className="reward-grid">{data.rewards.map(reward => <div className="reward-card panel" key={reward.id}><button className="delete-reward" onClick={() => deleteReward(reward.id)} aria-label={`حذف ${reward.title}`}><Trash2 size={16}/></button><div className={`reward-emoji ${reward.color}`}>{reward.emoji}</div><h3>{reward.title}</h3><div className="reward-cost"><Star size={15} fill="currentColor"/>{toFa(reward.points)} <span>ستاره</span></div><div className="reward-actions">{data.children.map(child => <button key={child.id} className="redeem-btn" disabled={child.balance < reward.points} onClick={() => redeem(reward, child)}>انتخاب برای {child.name}</button>)}</div></div>)}<button className="add-reward-card" onClick={() => setModal('reward')}><span><Plus size={22}/></span><b>جایزه‌ی تازه</b><small>یک انگیزه‌ی دوست‌داشتنی بسازید</small></button></section>{!data.children.length && <p className="empty-inline">برای ثبت جایزه، اول یک فرزند اضافه کنید.</p>}</>}
-        {tab === 'گزارش' && <><PageHeading title="گزارش خانواده" subtitle="نگاهی به تمام لحظه‌های تلاش و پیشرفت."/><div className="report-summary"><StatCard icon={<CheckCircle2/>} label="کارهای تأییدشده" value={toFa(finished.length)} note="از شروع فعالیت" tone="green"/><StatCard icon={<Wallet/>} label="ستاره در گردش" value={toFa(totalPoints)} note="موجودی فعلی بچه‌ها" tone="amber"/><StatCard icon={<Gift/>} label="جایزه‌های دریافت‌شده" value={toFa(data.activity.filter(a => a.kind === 'spend').length)} note="لحظه‌های شیرین" tone="violet"/></div><section className="panel report-panel"><div className="section-head"><div><h3>تاریخچه‌ی خانواده</h3><p>همه‌ی ستاره‌ها و تلاش‌ها در یک نگاه.</p></div><span className="history-badge"><Activity size={15}/> {toFa(data.activity.length)} رویداد</span></div><ActivityList items={data.activity}/>{data.activity.length === 0 && <EmptyState icon="✨" title="هنوز گزارشی نداریم" text="با ثبت اولین کار، اینجا پر از خبرهای خوب می‌شه."/>}</section></>}
-        <footer className="footer"><span>ساخته‌شده با <Heart size={13} fill="currentColor"/> برای روزهای بهتر خانواده</span><span>ستاره · نسخه‌ی ۱.۰</span></footer>
+        {tab === 'خانه' && dashboard}
+        {tab === 'فرزندان' && <><PageHeading title="فرزندان خانواده" subtitle="نام، تاریخ تولد و امتیاز هر فرزند را هر زمان تغییر دهید." action="افزودن فرزند" onAction={() => openModal('child')}/><section className="children-cards">{data.children.map(child => <ChildProfile key={child.id} child={child} pointsToToman={data.pointsToToman} tasks={data.tasks} onEdit={() => openModal('child', child)} onDelete={() => removeChild(child)} onTasks={() => { setSelectedChild(child.id); setPage('کارها'); }}/>) }<button className="add-child-card" onClick={() => openModal('child')}><span><Plus size={24}/></span><b>افزودن فرزند</b><small>پروفایل تازه بسازید</small></button></section><section className="panel family-note"><ShieldCheck size={23}/><div><b>حریم خصوصی خانواده</b><p>اطلاعات به‌صورت محلی روی همین دستگاه ذخیره می‌شود. از بخش تنظیمات نسخه‌ی پشتیبان بگیرید.</p></div></section></>}
+        {tab === 'کارها' && <><PageHeading title="کارها و برنامه‌ی روزانه" subtitle="برنامه‌های هرروزه، کارهای امروز و امتیاز قابل ویرایش‌اند." action="تعریف کار یک‌باره" onAction={() => openModal('task')}/><section className="panel routines-panel"><div className="section-head"><div><h3><CalendarDays size={19}/> برنامه‌های تکرارشونده</h3><p>کارهای فعال هر روز خودکار برای فرزندها ساخته می‌شوند.</p></div><button className="primary-btn compact-btn" onClick={() => openModal('routine')}><Plus size={17}/> افزودن برنامه</button></div><div className="routine-list">{data.routines.map(routine => <RoutineRow key={routine.id} routine={routine} child={data.children.find(child => child.id === routine.childId)} rate={data.pointsToToman} onEdit={() => openModal('routine', routine)} onDelete={() => removeRoutine(routine)} onToggle={() => toggleRoutine(routine)}/>)}</div>{!data.routines.length && <EmptyState icon="📅" title="برنامه‌ی روزانه‌ای ندارید" text="یک برنامه‌ی تکرارشونده اضافه کنید؛ مثل تمرین زبان یا ورزش روزانه." button="افزودن برنامه" onClick={() => openModal('routine')}/>}</section><section className="panel list-page"><div className="section-head list-title"><div><h3>فهرست کارها</h3><p>تأیید والد امتیاز را به کیف پول اضافه می‌کند.</p></div><span className="history-badge">{toFa(filteredTasks.length)} کار</span></div><div className="filter-bar"><div className="search-box"><Search size={19}/><input value={query} onChange={event => setQuery(event.target.value)} placeholder="جست‌وجوی عنوان کار..."/></div><select value={selectedChild} onChange={event => setSelectedChild(event.target.value)} aria-label="فیلتر فرزند"><option value="all">همه‌ی فرزندان</option>{data.children.map(child => <option value={child.id} key={child.id}>{child.name}</option>)}</select><button className="soft-btn today-filter" onClick={() => setShowTaskHistory(value => !value)}>{showTaskHistory ? 'فقط امروز' : 'نمایش تاریخچه'}</button></div><div className="task-list full-task-list">{filteredTasks.map(task => <TaskRow key={task.id} task={task} child={data.children.find(child => child.id === task.childId)} onApprove={() => approveTask(task)} onEdit={() => openModal(task.routineId ? 'routine' : 'task', task.routineId ? data.routines.find(routine => routine.id === task.routineId) : task)} onDelete={() => removeTask(task)} rate={data.pointsToToman}/>)}</div>{!filteredTasks.length && <EmptyState icon="📝" title="کاری پیدا نشد" text="جست‌وجوی دیگری انجام دهید یا کار تازه‌ای ثبت کنید." button="تعریف کار" onClick={() => openModal('task')}/>}</section></>}
+        {tab === 'جایزه‌ها' && <><PageHeading title="فروشگاه جایزه‌ها" subtitle="هزینه‌ی هر جایزه را متناسب با ارزش امتیازها تنظیم کنید." action="افزودن جایزه" onAction={() => openModal('reward')}/><div className="redeem-hint"><Sparkles size={19}/><span>هر امتیاز فعلاً معادل {toFa(data.pointsToToman)} تومان است.</span><button className="text-link" onClick={() => setPage('تنظیمات')}>تغییر نرخ <ChevronLeft size={16}/></button><span className="hint-stars">{toFa(totalPoints)} <Star size={16} fill="currentColor"/></span></div><section className="reward-grid">{data.rewards.map(reward => <RewardCard key={reward.id} reward={reward} childrenList={data.children} onRedeem={redeemReward} onEdit={() => openModal('reward', reward)} onDelete={() => removeReward(reward)} rate={data.pointsToToman}/>) }<button className="add-reward-card" onClick={() => openModal('reward')}><span><Plus size={24}/></span><b>جایزه‌ی تازه</b><small>یک انگیزه‌ی دوست‌داشتنی بسازید</small></button></section></>}
+        {tab === 'گزارش' && <><PageHeading title="گزارش خانواده" subtitle="موجودی، تلاش‌ها و ارزش تومانی امتیازهای خانواده."/><div className="report-summary"><StatCard icon={<CheckCircle2/>} label="کارهای تأییدشده‌ی امروز" value={toFa(finished.length)} note="از برنامه‌ی امروز" tone="green"/><StatCard icon={<Wallet/>} label="موجودی امتیازها" value={toFa(totalPoints)} note={toman(totalPoints, data.pointsToToman)} tone="amber"/><StatCard icon={<Gift/>} label="جایزه‌های دریافت‌شده" value={toFa(data.activity.filter(item => item.kind === 'spend').length)} note="لحظه‌های شیرین" tone="violet"/></div><section className="panel report-panel"><div className="section-head"><div><h3>تاریخچه‌ی خانواده</h3><p>همه‌ی ستاره‌ها و تلاش‌ها در یک نگاه.</p></div><span className="history-badge"><Activity size={17}/>{toFa(data.activity.length)} رویداد</span></div><ActivityList items={data.activity}/>{!data.activity.length && <EmptyState icon="✨" title="هنوز گزارشی نداریم" text="با ثبت اولین کار، اینجا پر از خبرهای خوب می‌شود."/>}</section></>}
+        {tab === 'تنظیمات' && <><PageHeading title="تنظیمات و پشتیبان" subtitle="نرخ جایزه را تغییر دهید و اطلاعات خانواده را مدیریت کنید."/><div className="settings-grid"><section className="panel setting-card"><div className="setting-icon green"><Coins size={23}/></div><h3>ارزش هر امتیاز</h3><p>به‌ازای هر امتیاز، چند تومان جایزه در نظر گرفته شود؟</p><label className="settings-rate-label">تومان برای هر امتیاز<div className="number-input"><input type="number" min="1" max="10000000" value={data.pointsToToman} onChange={event => { const rate = Number(event.target.value); if (rate > 0) setData(current => ({ ...current, pointsToToman: rate })); }}/><span>تومان</span></div></label><div className="setting-example"><span>مثال: ۱۰ امتیاز برابر است با</span><b>{toman(10, data.pointsToToman)}</b></div></section><section className="panel setting-card"><div className="setting-icon violet"><Download size={22}/></div><h3>پشتیبان‌گیری</h3><p>نسخه‌ی پشتیبان را نگه دارید تا اطلاعات بچه‌ها، کارها و امتیازها محفوظ بماند.</p><button className="primary-btn" onClick={exportData}><Download size={18}/> دریافت فایل پشتیبان</button><label className="import-label"><FileText size={17}/> بازیابی از فایل پشتیبان<input type="file" accept="application/json,.json" onChange={event => { void importData(event.target.files?.[0]); event.target.value = ''; }}/></label></section></div><section className="panel family-note"><ShieldCheck size={23}/><div><b>اطلاعات روی دستگاه شما می‌ماند</b><p>برنامه حساب کاربری یا همگام‌سازی ابری ندارد. برای انتقال اطلاعات به دستگاه دیگر، از پشتیبان‌گیری استفاده کنید.</p></div></section></>}
+        <footer className="footer"><span>ساخته‌شده با <Heart size={14} fill="currentColor"/> برای روزهای بهتر خانواده</span><span>ستاره · نسخه‌ی ۲.۰</span></footer>
       </div>
     </main>
-    <nav className="mobile-bottom-nav">{navItems.slice(0, 5).map(({ label, icon: Icon }) => <button className={tab === label ? 'active' : ''} key={label} onClick={() => setTab(label)}><Icon size={19}/><span>{label}</span></button>)}</nav>
-    {modal && <Modal title={modal === 'child' ? 'افزودن ستاره‌ی تازه' : modal === 'task' ? 'تعریف یک کار خوب' : 'ساخت جایزه‌ی تازه'} onClose={() => setModal(null)}><FormContent type={modal} childrenList={data.children} onChild={addChild} onTask={addTask} onReward={addReward} onClose={() => setModal(null)}/></Modal>}
-    {toast && <div className="toast"><span><Check size={16}/></span>{toast}<button onClick={() => setToast('')} aria-label="بستن"><X size={16}/></button></div>}
+    <nav className="mobile-bottom-nav">{navItems.slice(0, 5).map(({ label, icon: Icon }) => <button className={tab === label ? 'active' : ''} key={label} onClick={() => setPage(label)}><Icon size={22}/><span>{label}</span></button>)}</nav>
+    {modal && <Modal title={modal === 'child' ? (editing ? 'ویرایش اطلاعات فرزند' : 'افزودن فرزند') : modal === 'task' ? (editing ? 'ویرایش کار امروز' : 'تعریف کار یک‌باره') : modal === 'routine' ? (editing ? 'ویرایش برنامه‌ی روزانه' : 'افزودن برنامه‌ی روزانه') : (editing ? 'ویرایش جایزه' : 'ساخت جایزه‌ی تازه')} onClose={closeModal}><FormContent type={modal} item={editing} childrenList={data.children} onChild={saveChild} onTask={saveTask} onRoutine={saveRoutine} onReward={saveReward} onClose={closeModal}/></Modal>}
+    {toast && <div className="toast" role="status"><span><Check size={18}/></span>{toast}<button onClick={() => setToast('')} aria-label="بستن"><X size={18}/></button></div>}
   </div>;
 }
 
 function StatCard({ icon, label, value, note, tone }: { icon: ReactNode; label: string; value: string; note: string; tone: string }) {
   return <div className="stat-card panel"><div className={`stat-icon ${tone}`}>{icon}</div><div className="stat-label">{label}</div><div className="stat-value">{value}</div><div className="stat-note"><span/> {note}</div></div>;
 }
-function TaskRow({ task, child, onApprove }: { task: Task; child?: Child; onApprove: () => void }) {
-  return <div className="task-row"><div className={`task-check ${task.status === 'done' ? 'is-done' : ''}`}>{task.status === 'done' ? <Check size={16}/> : <span/>}</div><div className="task-info"><b>{task.title}</b><span><span className={`mini-avatar ${child?.color}`}>{child?.avatar ?? '🙂'}</span>{child?.name ?? 'بدون فرزند'}<i/> {task.category} <i/> {task.date}</span></div><div className="task-points"><Star size={14} fill="currentColor"/>{toFa(task.points)}</div>{task.status === 'pending' ? <button className="approve-btn" onClick={onApprove}><Check size={15}/> تأیید</button> : <span className="done-label"><Check size={14}/> انجام شد</span>}</div>;
+function TaskRow({ task, child, onApprove, onEdit, onDelete, rate }: { task: Task; child?: Child; onApprove: () => void; onEdit: () => void; onDelete: () => void; rate: number }) {
+  return <div className={`task-row ${task.status === 'done' ? 'task-completed' : ''}`}><div className={`task-check ${task.status === 'done' ? 'is-done' : ''}`}>{task.status === 'done' ? <Check size={17}/> : <span/>}</div><div className="task-info"><b>{task.title}</b><span><span className={`mini-avatar ${child?.color}`}>{child?.avatar ?? '🙂'}</span>{child?.name ?? 'بدون فرزند'}<i/>{task.category}<i/>{task.date}</span></div><div className="task-points"><Star size={16} fill="currentColor"/>{toFa(task.points)}<small>{toman(task.points, rate)}</small></div><div className="task-controls">{task.status === 'pending' ? <button className="approve-btn" onClick={onApprove}><Check size={17}/> تأیید</button> : <span className="done-label"><Check size={16}/> انجام شد</span>}<button className="row-icon-btn" onClick={onEdit} aria-label="ویرایش کار"><Pencil size={16}/></button><button className="row-icon-btn delete" onClick={onDelete} aria-label="حذف کار"><Trash2 size={16}/></button></div></div>;
 }
-function ChildRow({ child }: { child: Child }) { return <div className="child-row"><div className={`child-avatar ${child.color}`}>{child.avatar}</div><div className="child-info"><b>{child.name}</b><small>{toFa(child.age)} ساله</small></div><div className="child-points"><strong>{toFa(child.balance)}</strong><span>ستاره</span></div><Star className="child-star" size={15} fill="currentColor"/></div>; }
-function ActivityList({ items }: { items: ActivityItem[] }) { return <div className="activity-list">{items.map(item => <div className="activity-row" key={item.id}><div className={`activity-icon ${item.kind}`}>{item.kind === 'spend' ? <Gift size={17}/> : item.kind === 'task' ? <CheckCircle2 size={17}/> : <Star size={17}/>}</div><div className="activity-info"><b>{item.text}</b><span>{item.detail}</span></div><div className="activity-time">{item.time}</div>{item.kind !== 'task' && <div className={`activity-delta ${item.kind}`}>{item.kind === 'spend' ? '−' : '+'}{toFa(Number(item.detail.match(/[۰-۹0-9]+/)?.[0]?.replace(/[۰-۹]/g, d => String('۰۱۲۳۴۵۶۷۸۹'.indexOf(d))) ?? 0))} <Star size={12} fill="currentColor"/></div>}</div>)}</div>; }
-function EmptyState({ icon, title, text, button, onClick }: { icon: string; title: string; text: string; button?: string; onClick?: () => void }) { return <div className="empty-state"><span>{icon}</span><b>{title}</b><p>{text}</p>{button && onClick && <button className="soft-btn" onClick={onClick}><Plus size={15}/>{button}</button>}</div>; }
-function PageHeading({ title, subtitle, action, onAction }: { title: string; subtitle: string; action?: string; onAction?: () => void }) { return <section className="page-heading"><div><div className="eyebrow"><span className="eyebrow-dot"/> همراه رشد بچه‌ها</div><h1>{title}</h1><p>{subtitle}</p></div>{action && onAction && <button className="primary-btn" onClick={onAction}><Plus size={18}/>{action}</button>}</section>; }
-function Modal({ title, onClose, children }: { title: string; onClose: () => void; children: ReactNode }) { return <div className="modal-backdrop" onMouseDown={e => { if (e.target === e.currentTarget) onClose(); }}><div className="modal" role="dialog" aria-modal="true"><div className="modal-head"><div><span className="modal-mark"><Sparkles size={17}/></span><h2>{title}</h2></div><button className="icon-btn" onClick={onClose} aria-label="بستن"><X size={19}/></button></div>{children}</div></div>; }
-function FormContent({ type, childrenList, onChild, onTask, onReward, onClose }: { type: 'child' | 'task' | 'reward'; childrenList: Child[]; onChild: (name: string, age: number, avatar: string) => void; onTask: (title: string, childId: string, points: number, category: string) => void; onReward: (title: string, points: number, emoji: string) => void; onClose: () => void }) {
-  const [name, setName] = useState(''); const [age, setAge] = useState(7); const [points, setPoints] = useState(10); const [childId, setChildId] = useState(childrenList[0]?.id ?? ''); const [category, setCategory] = useState('خانه'); const [emoji, setEmoji] = useState('🎁');
-  const submit = (e: FormEvent) => { e.preventDefault(); if (!name.trim()) return; if (type === 'child') onChild(name.trim(), age, age < 7 ? '👧🏻' : '🧒🏻'); else if (type === 'task') onTask(name.trim(), childId, points, category); else onReward(name.trim(), points, emoji); };
-  const title = type === 'child' ? 'اسم کوچولوتون چیه؟' : type === 'task' ? 'چه کار خوبی قراره انجام بشه؟' : 'این جایزه رو چی صدا کنیم؟';
-  const canSubmit = type !== 'task' || childrenList.length > 0;
-  return <form className="form-content" onSubmit={submit}><p className="form-intro">{title}</p><label>{type === 'child' ? 'نام فرزند' : type === 'task' ? 'عنوان کار' : 'نام جایزه'}<input autoFocus value={name} onChange={e => setName(e.target.value)} placeholder={type === 'child' ? 'مثلاً آوا' : type === 'task' ? 'مثلاً مرتب کردن اسباب‌بازی‌ها' : 'مثلاً رفتن به شهربازی'} required/></label>
-    {type === 'child' && <label>سن فرزند<input type="number" min="1" max="18" value={age} onChange={e => setAge(Number(e.target.value))}/></label>}
-    {type === 'task' && <>{childrenList.length ? <label>برای کدوم فرزند؟<select value={childId} onChange={e => setChildId(e.target.value)}>{childrenList.map(c => <option key={c.id} value={c.id}>{c.avatar} {c.name}</option>)}</select></label> : <p className="form-warning">برای تعریف کار، ابتدا یک فرزند اضافه کنید.</p>}<label>دسته‌بندی<select value={category} onChange={e => setCategory(e.target.value)}><option>خانه</option><option>یادگیری</option><option>خانواده</option><option>سلامتی</option><option>مسئولیت‌پذیری</option></select></label></>}
-    {type === 'reward' && <label>شکلک جایزه<select value={emoji} onChange={e => setEmoji(e.target.value)}>{['🎁','🎮','🍦','🍰','🛝','📚','⚽','🎨','🍿','🚲'].map(em => <option key={em}>{em}</option>)}</select></label>}
-    {type !== 'child' && <label>{type === 'task' ? 'ارزش کار (ستاره)' : 'هزینه‌ی جایزه (ستاره)'}<div className="number-input"><input type="number" min="1" max="999" value={points} onChange={e => setPoints(Number(e.target.value))}/><Star size={16} fill="currentColor"/></div></label>}
-    <div className="form-actions"><button type="button" className="cancel-btn" onClick={onClose}>انصراف</button><button type="submit" className="primary-btn" disabled={!canSubmit}><Plus size={17}/>{type === 'child' ? 'افزودن به خانواده' : type === 'task' ? 'ثبت کار جدید' : 'ساخت جایزه'}</button></div>
+function ChildRow({ child, pointsToToman }: { child: Child; pointsToToman: number }) { return <div className="child-row"><div className={`child-avatar ${child.color}`}>{child.avatar}</div><div className="child-info"><b>{child.name}</b><small>{ageLabel(child.birthDate)}</small></div><div className="child-points"><strong>{toFa(child.balance)}</strong><span>{toman(child.balance, pointsToToman)}</span></div><Star className="child-star" size={18} fill="currentColor"/></div>; }
+function ChildProfile({ child, pointsToToman, tasks, onEdit, onDelete, onTasks }: { child: Child; pointsToToman: number; tasks: Task[]; onEdit: () => void; onDelete: () => void; onTasks: () => void }) {
+  const done = tasks.filter(task => task.childId === child.id && task.status === 'done').length;
+  const pending = tasks.filter(task => task.childId === child.id && task.status === 'pending').length;
+  return <article className="child-profile panel"><div className={`profile-avatar ${child.color}`}>{child.avatar}</div><div className="profile-name"><h3>{child.name}</h3><span>{ageLabel(child.birthDate)} · تولد {formatBirthDate(child.birthDate)}</span></div><div className="profile-tools"><button className="row-icon-btn" onClick={onEdit} aria-label="ویرایش فرزند"><Pencil size={17}/></button><button className="row-icon-btn delete" onClick={onDelete} aria-label="حذف فرزند"><Trash2 size={17}/></button></div><div className="profile-balance"><Coins size={20}/><strong>{toFa(child.balance)}</strong><span>امتیاز</span><i/>{toman(child.balance, pointsToToman)}</div><div className="profile-progress"><div><span>وضعیت کارهای امروز</span><b>{toFa(done)} انجام‌شده · {toFa(pending)} باقی‌مانده</b></div><div className="progress-track"><i style={{ width: `${done + pending ? Math.round(done / (done + pending) * 100) : 0}%` }}/></div></div><div className="profile-footer"><span>ارزش امتیاز: {toFa(pointsToToman)} تومان</span><button className="text-link" onClick={onTasks}>دیدن کارها <ChevronLeft size={16}/></button></div></article>;
+}
+function RoutineRow({ routine, child, rate, onEdit, onDelete, onToggle }: { routine: Routine; child?: Child; rate: number; onEdit: () => void; onDelete: () => void; onToggle: () => void }) {
+  const Icon = routine.category === 'زبان انگلیسی' ? Languages : routine.category === 'قرآن' ? BookMarked : routine.category === 'ورزش' ? Dumbbell : BookOpen;
+  return <div className={`routine-row ${routine.active ? '' : 'inactive'}`}><span className="routine-icon"><Icon size={20}/></span><div className="routine-info"><b>{routine.title}</b><span>{child?.name ?? 'فرزند حذف‌شده'} · {routine.category} · روزانه</span></div><div className="routine-reward"><strong>{toFa(routine.points)} امتیاز</strong><small>{toman(routine.points, rate)}</small></div><button className={`toggle-switch ${routine.active ? 'on' : ''}`} onClick={onToggle} aria-label={routine.active ? 'متوقف کردن برنامه' : 'فعال کردن برنامه'}><i/></button><button className="row-icon-btn" onClick={onEdit} aria-label="ویرایش برنامه"><Pencil size={16}/></button><button className="row-icon-btn delete" onClick={onDelete} aria-label="حذف برنامه"><Trash2 size={16}/></button></div>;
+}
+function RewardCard({ reward, childrenList, onRedeem, onEdit, onDelete, rate }: { reward: Reward; childrenList: Child[]; onRedeem: (reward: Reward, child: Child) => void; onEdit: () => void; onDelete: () => void; rate: number }) {
+  return <article className="reward-card panel"><div className="reward-tools"><button className="row-icon-btn" onClick={onEdit} aria-label="ویرایش جایزه"><Pencil size={16}/></button><button className="row-icon-btn delete" onClick={onDelete} aria-label="حذف جایزه"><Trash2 size={16}/></button></div><div className={`reward-emoji ${reward.color}`}>{reward.emoji}</div><h3>{reward.title}</h3><div className="reward-cost"><Star size={17} fill="currentColor"/>{toFa(reward.points)}<span>امتیاز</span></div><div className="reward-money">معادل {toman(reward.points, rate)}</div><div className="reward-actions">{childrenList.map(child => <button key={child.id} className="redeem-btn" disabled={child.balance < reward.points} onClick={() => onRedeem(reward, child)}>ثبت برای {child.name}</button>)}</div></article>;
+}
+function ActivityList({ items }: { items: ActivityItem[] }) { return <div className="activity-list">{items.map(item => <div className="activity-row" key={item.id}><div className={`activity-icon ${item.kind}`}>{item.kind === 'spend' ? <Gift size={19}/> : item.kind === 'task' ? <CheckCircle2 size={19}/> : <Star size={18}/>}</div><div className="activity-info"><b>{item.text}</b><span>{item.detail}</span></div><div className="activity-time">{item.time}</div>{item.kind !== 'task' && <div className={`activity-delta ${item.kind}`}>{item.kind === 'spend' ? '−' : '+'}{toFa(item.points ?? 0)} <Star size={14} fill="currentColor"/></div>}</div>)}</div>; }
+function EmptyState({ icon, title, text, button, onClick }: { icon: string; title: string; text: string; button?: string; onClick?: () => void }) { return <div className="empty-state"><span>{icon}</span><b>{title}</b><p>{text}</p>{button && onClick && <button className="soft-btn" onClick={onClick}><Plus size={17}/>{button}</button>}</div>; }
+function PageHeading({ title, subtitle, action, onAction }: { title: string; subtitle: string; action?: string; onAction?: () => void }) { return <section className="page-heading"><div><div className="eyebrow"><span className="eyebrow-dot"/> همراه رشد بچه‌ها</div><h1>{title}</h1><p>{subtitle}</p></div>{action && onAction && <button className="primary-btn" onClick={onAction}><Plus size={19}/>{action}</button>}</section>; }
+function Modal({ title, onClose, children }: { title: string; onClose: () => void; children: ReactNode }) {
+  useEffect(() => { const onKey = (event: KeyboardEvent) => { if (event.key === 'Escape') onClose(); }; window.addEventListener('keydown', onKey); return () => window.removeEventListener('keydown', onKey); }, [onClose]);
+  return <div className="modal-backdrop" onMouseDown={event => { if (event.target === event.currentTarget) onClose(); }}><div className="modal" role="dialog" aria-modal="true"><div className="modal-head"><div><span className="modal-mark"><Sparkles size={19}/></span><h2>{title}</h2></div><button className="icon-btn" onClick={onClose} aria-label="بستن"><X size={21}/></button></div>{children}</div></div>;
+}
+function FormContent({ type, item, childrenList, onChild, onTask, onRoutine, onReward, onClose }: {
+  type: Exclude<ModalType, null>; item?: Child | Task | Routine | Reward; childrenList: Child[];
+  onChild: (input: Omit<Child, 'id' | 'balance' | 'color'>, id?: string) => void;
+  onTask: (input: Omit<Task, 'id' | 'status' | 'date' | 'dayKey' | 'routineId'>, id?: string) => void;
+  onRoutine: (input: Omit<Routine, 'id' | 'active'>, id?: string) => void;
+  onReward: (title: string, points: number, emoji: string, id?: string) => void;
+  onClose: () => void;
+}) {
+  const child = type === 'child' ? item as Child | undefined : undefined;
+  const task = type === 'task' ? item as Task | undefined : undefined;
+  const routine = type === 'routine' ? item as Routine | undefined : undefined;
+  const reward = type === 'reward' ? item as Reward | undefined : undefined;
+  const [name, setName] = useState(child?.name ?? task?.title ?? routine?.title ?? reward?.title ?? '');
+  const [birthDate, setBirthDate] = useState(child?.birthDate ?? '');
+  const [points, setPoints] = useState(task?.points ?? routine?.points ?? reward?.points ?? 1);
+  const [childId, setChildId] = useState(task?.childId ?? routine?.childId ?? childrenList[0]?.id ?? '');
+  const [category, setCategory] = useState(task?.category ?? routine?.category ?? 'درس و گفت‌وگو');
+  const [emoji, setEmoji] = useState(reward?.emoji ?? '🎁');
+  const taskChildren = childrenList.filter(candidate => ageLabel(candidate.birthDate) !== 'نوزاد');
+  const normalizedBirthDate = digitsToLatin(birthDate).replace(/\//g, '-').trim();
+  const birthDateValid = /^\d{4}-(0?[1-9]|1[0-2])-(0?[1-9]|[12]\d|3[01])$/.test(normalizedBirthDate);
+  const noChildren = (type === 'task' || type === 'routine') && taskChildren.length === 0;
+  const submit = (event: FormEvent) => {
+    event.preventDefault();
+    if (!name.trim()) return;
+    if (type === 'child') {
+      if (!birthDateValid) return;
+      const icon = ageLabel(normalizedBirthDate).includes('نوزاد') ? '👶🏻' : child?.avatar ?? '🧒🏻';
+      onChild({ name: name.trim(), birthDate: normalizedBirthDate, avatar: icon }, child?.id);
+    } else if (type === 'task') onTask({ title: name.trim(), childId, points: Math.max(1, points), category }, task?.id);
+    else if (type === 'routine') onRoutine({ title: name.trim(), childId, points: Math.max(1, points), category }, routine?.id);
+    else onReward(name.trim(), Math.max(1, points), emoji, reward?.id);
+  };
+  return <form className="form-content" onSubmit={submit}>
+    {type === 'child' && <><p className="form-intro">نام و تاریخ شمسی تولد را وارد کنید؛ سن به‌صورت خودکار محاسبه می‌شود.</p><label>نام فرزند<input autoFocus value={name} onChange={event => setName(event.target.value)} placeholder="مثلاً آوا" required/></label><label>تاریخ تولد شمسی<input inputMode="numeric" value={birthDate} onChange={event => setBirthDate(event.target.value)} placeholder="مثلاً ۱۴۰۵/۰۸/۱۲" required aria-invalid={birthDate.length > 0 && !birthDateValid}/></label><small className="field-hint">روز / ماه / سال شمسی · نمونه: ۱۳۹۴/۰۱/۲۶{birthDate.length > 0 && !birthDateValid && <strong> · تاریخ را بررسی کنید</strong>}</small></>}
+    {type === 'task' && <><p className="form-intro">این کار فقط برای امروز ثبت می‌شود.</p><label>عنوان کار<input autoFocus value={name} onChange={event => setName(event.target.value)} placeholder="مثلاً مرتب کردن میز مطالعه" required/></label><ChildPicker value={childId} childrenList={taskChildren} onChange={setChildId} disabled={noChildren}/><CategoryPicker value={category} onChange={setCategory}/><PointsInput label="امتیاز کار" value={points} onChange={setPoints}/></>}
+    {type === 'routine' && <><p className="form-intro">این برنامه هر روز برای فرزند انتخاب‌شده ساخته می‌شود و قابل ویرایش یا توقف است.</p><label>عنوان برنامه<input autoFocus value={name} onChange={event => setName(event.target.value)} placeholder="مثلاً حفظ پنج واژه‌ی انگلیسی" required/></label><ChildPicker value={childId} childrenList={taskChildren} onChange={setChildId} disabled={noChildren}/><CategoryPicker value={category} onChange={setCategory}/><PointsInput label="امتیاز پس از تأیید روزانه" value={points} onChange={setPoints}/></>}
+    {type === 'reward' && <><p className="form-intro">هزینه‌ی جایزه را با امتیاز وارد کنید؛ مبلغ تومانی طبق نرخ تنظیم‌شده نمایش داده می‌شود.</p><label>نام جایزه<input autoFocus value={name} onChange={event => setName(event.target.value)} placeholder="مثلاً یک ساعت بازی" required/></label><label>شکلک جایزه<select value={emoji} onChange={event => setEmoji(event.target.value)}>{['🎁','🎮','🍦','🍰','🛝','📚','⚽','🎨','🍿','🚲','🧸','🌳'].map(value => <option key={value}>{value}</option>)}</select></label><PointsInput label="هزینه به امتیاز" value={points} onChange={setPoints}/></>}
+    {noChildren && <p className="form-warning">برای ثبت کار روزانه، فرزندی غیر از نوزاد باید در خانواده باشد.</p>}
+    <div className="form-actions"><button type="button" className="cancel-btn" onClick={onClose}>انصراف</button><button type="submit" className="primary-btn" disabled={noChildren || (type === 'child' && !birthDateValid)}><Plus size={18}/>{type === 'child' ? child ? 'ذخیره‌ی تغییرات' : 'افزودن فرزند' : type === 'task' ? task ? 'ذخیره‌ی تغییرات' : 'ثبت کار امروز' : type === 'routine' ? routine ? 'ذخیره‌ی برنامه' : 'افزودن به برنامه‌ی روزانه' : reward ? 'ذخیره‌ی جایزه' : 'ساخت جایزه'}</button></div>
   </form>;
 }
+function ChildPicker({ value, childrenList, onChange, disabled }: { value: string; childrenList: Child[]; onChange: (value: string) => void; disabled: boolean }) { return <label>برای کدام فرزند؟<select value={value} onChange={event => onChange(event.target.value)} disabled={disabled}>{childrenList.map(child => <option key={child.id} value={child.id}>{child.avatar} {child.name}</option>)}</select></label>; }
+function CategoryPicker({ value, onChange }: { value: string; onChange: (value: string) => void }) { return <label>دسته‌بندی<select value={value} onChange={event => onChange(event.target.value)}>{['درس و گفت‌وگو','زبان انگلیسی','قرآن','ورزش','خانه','خانواده','سلامتی','مسئولیت‌پذیری','سایر'].map(item => <option key={item}>{item}</option>)}</select></label>; }
+function PointsInput({ label, value, onChange }: { label: string; value: number; onChange: (value: number) => void }) { return <label>{label}<div className="number-input"><input type="number" min="1" max="100000" value={value} onChange={event => onChange(Number(event.target.value))}/><Star size={17} fill="currentColor"/></div></label>; }
 
 export default App;
