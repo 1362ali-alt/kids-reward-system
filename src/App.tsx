@@ -12,7 +12,7 @@ import {
   Trophy, Users, Wallet, X, BookOpen, BookMarked,
 } from 'lucide-react';
 
-type Child = { id: string; name: string; birthDate: string; avatar: string; color: string; balance: number };
+type Child = { id: string; name: string; birthDate: string; avatar: string; color: string; balance: number; photo?: string; interests?: string; note?: string };
 type TaskStatus = 'pending' | 'done';
 type Task = { id: string; title: string; childId: string; points: number; status: TaskStatus; category: string; date: string; dayKey: string; routineId?: string };
 type Routine = { id: string; title: string; childId: string; points: number; category: string; active: boolean };
@@ -67,6 +67,30 @@ const formatBirthDate = (value: string) => {
   const month = Number(match[2]);
   return `${toFa(Number(match[3]))} ${MONTHS[month - 1] ?? ''} ${toFa(Number(match[1]))}`;
 };
+const prepareChildPhoto = (file: File) => new Promise<string>((resolve, reject) => {
+  if (!file.type.startsWith('image/')) { reject(new Error('invalid-image')); return; }
+  if (file.size > 8 * 1024 * 1024) { reject(new Error('image-too-large')); return; }
+  const objectUrl = URL.createObjectURL(file);
+  const image = new Image();
+  image.onload = () => {
+    URL.revokeObjectURL(objectUrl);
+    const canvas = document.createElement('canvas');
+    const side = Math.min(image.naturalWidth, image.naturalHeight);
+    canvas.width = 320; canvas.height = 320;
+    const context = canvas.getContext('2d');
+    if (!context) { reject(new Error('image-processing-failed')); return; }
+    context.drawImage(image, (image.naturalWidth - side) / 2, (image.naturalHeight - side) / 2, side, side, 0, 0, 320, 320);
+    canvas.toBlob(blob => {
+      if (!blob) { reject(new Error('image-processing-failed')); return; }
+      const reader = new FileReader();
+      reader.onload = () => typeof reader.result === 'string' ? resolve(reader.result) : reject(new Error('image-processing-failed'));
+      reader.onerror = () => reject(new Error('image-processing-failed'));
+      reader.readAsDataURL(blob);
+    }, 'image/jpeg', 0.78);
+  };
+  image.onerror = () => { URL.revokeObjectURL(objectUrl); reject(new Error('image-processing-failed')); };
+  image.src = objectUrl;
+});
 const ageLabel = (birthDate: string) => {
   const parts = birthDate.split('-').map(Number);
   if (parts.length !== 3 || parts.some(Number.isNaN)) return 'تاریخ تولد ثبت نشده';
@@ -104,7 +128,7 @@ const validAppData = (value: unknown): value is AppData => {
   if (typeof value.pointsToToman !== 'number' || !Number.isSafeInteger(value.pointsToToman) || value.pointsToToman < 1) return false;
   const validIdName = (item: unknown) => isRecord(item) && typeof item.id === 'string' && typeof item.title === 'string';
   const safeInteger = (input: unknown) => typeof input === 'number' && Number.isSafeInteger(input);
-  return value.children.every(item => isRecord(item) && typeof item.id === 'string' && typeof item.name === 'string' && typeof item.birthDate === 'string' && typeof item.avatar === 'string' && typeof item.color === 'string' && safeInteger(item.balance) && Number(item.balance) >= 0)
+  return value.children.every(item => isRecord(item) && typeof item.id === 'string' && typeof item.name === 'string' && typeof item.birthDate === 'string' && typeof item.avatar === 'string' && typeof item.color === 'string' && safeInteger(item.balance) && Number(item.balance) >= 0 && (item.photo === undefined || (typeof item.photo === 'string' && item.photo.startsWith('data:image/jpeg;base64,') && item.photo.length <= 260_000)) && (item.interests === undefined || (typeof item.interests === 'string' && item.interests.length <= 80)) && (item.note === undefined || (typeof item.note === 'string' && item.note.length <= 240)))
     && value.tasks.every(item => validIdName(item) && typeof item.childId === 'string' && safeInteger(item.points) && Number(item.points) > 0 && (item.status === 'pending' || item.status === 'done') && typeof item.category === 'string' && typeof item.date === 'string' && typeof item.dayKey === 'string')
     && value.routines.every(item => validIdName(item) && typeof item.childId === 'string' && safeInteger(item.points) && Number(item.points) > 0 && typeof item.category === 'string' && typeof item.active === 'boolean')
     && value.rewards.every(item => validIdName(item) && safeInteger(item.points) && Number(item.points) > 0 && typeof item.emoji === 'string' && typeof item.color === 'string')
@@ -289,7 +313,7 @@ function App() {
     setCashoutOpen(false);
     setToast(`${toFa(stars)} ستاره‌ی ${child.name} با موفقیت به ${toman(stars, data.pointsToToman)} تبدیل شد.`);
   };
-  const saveChild = (input: Omit<Child, 'id' | 'balance' | 'color'>, id?: string) => {
+  const saveChild = (input: Omit<Child, 'id' | 'balance'>, id?: string) => {
     if (id) {
       setData(current => {
         const updated = current.children.find(child => child.id === id);
@@ -306,7 +330,7 @@ function App() {
       });
       setToast('اطلاعات فرزند ویرایش شد.');
     } else {
-      const child: Child = { id: uid(), ...input, color: 'blue', balance: 0 };
+      const child: Child = { id: uid(), ...input, balance: 0 };
       const routines = createRoutineDefaults([child]);
       setData(current => ({ ...current, children: [...current.children, child], routines: [...current.routines, ...routines], tasks: [...routines.map(routine => routineTask(routine, todayKey())), ...current.tasks] }));
       setToast(`${child.name} به خانواده اضافه شد.`);
@@ -451,17 +475,21 @@ function App() {
   </div>;
 }
 
+function AvatarContent({ child }: { child?: Child }) {
+  return child?.photo ? <img src={child.photo} alt={child.name ? `عکس ${child.name}` : ''}/> : child?.avatar ?? '🙂';
+}
 function StatCard({ icon, label, value, note, tone }: { icon: ReactNode; label: string; value: string; note: string; tone: string }) {
   return <div className="stat-card panel"><div className={`stat-icon ${tone}`}>{icon}</div><div className="stat-label">{label}</div><div className="stat-value">{value}</div><div className="stat-note"><span/> {note}</div></div>;
 }
 function TaskRow({ task, child, onApprove, onEdit, onDelete, rate }: { task: Task; child?: Child; onApprove: () => void; onEdit: () => void; onDelete: () => void; rate: number }) {
-  return <div className={`task-row ${task.status === 'done' ? 'task-completed' : ''}`}><div className={`task-check ${task.status === 'done' ? 'is-done' : ''}`}>{task.status === 'done' ? <Check size={17}/> : <span/>}</div><div className="task-info"><b>{task.title}</b><span><span className={`mini-avatar ${child?.color}`}>{child?.avatar ?? '🙂'}</span>{child?.name ?? 'بدون فرزند'}<i/>{task.category}<i/>{task.date}</span></div><div className="task-points"><Star size={16} fill="currentColor"/>{toFa(task.points)}<small>{toman(task.points, rate)}</small></div><div className="task-controls">{task.status === 'pending' ? <><button className="approve-btn" onClick={onApprove}><Check size={17}/> تأیید</button><button className="row-icon-btn" onClick={onEdit} aria-label="ویرایش کار"><Pencil size={16}/></button><button className="row-icon-btn delete" onClick={onDelete} aria-label="حذف کار"><Trash2 size={16}/></button></> : <span className="done-label"><Check size={16}/> انجام شد</span>}</div></div>;
+  return <div className={`task-row ${task.status === 'done' ? 'task-completed' : ''}`}><div className={`task-check ${task.status === 'done' ? 'is-done' : ''}`}>{task.status === 'done' ? <Check size={17}/> : <span/>}</div><div className="task-info"><b>{task.title}</b><span><span className={`mini-avatar ${child?.color ?? 'blue'}`}><AvatarContent child={child}/></span>{child?.name ?? 'بدون فرزند'}<i/>{task.category}<i/>{task.date}</span></div><div className="task-points"><Star size={16} fill="currentColor"/>{toFa(task.points)}<small>{toman(task.points, rate)}</small></div><div className="task-controls">{task.status === 'pending' ? <><button className="approve-btn" onClick={onApprove}><Check size={17}/> تأیید</button><button className="row-icon-btn" onClick={onEdit} aria-label="ویرایش کار"><Pencil size={16}/></button><button className="row-icon-btn delete" onClick={onDelete} aria-label="حذف کار"><Trash2 size={16}/></button></> : <span className="done-label"><Check size={16}/> انجام شد</span>}</div></div>;
 }
-function ChildRow({ child, pointsToToman }: { child: Child; pointsToToman: number }) { return <div className="child-row"><div className={`child-avatar ${child.color}`}>{child.avatar}</div><div className="child-info"><b>{child.name}</b><small>{ageLabel(child.birthDate)}</small></div><div className="child-points"><strong>{toFa(child.balance)}</strong><span>{toman(child.balance, pointsToToman)}</span></div><Star className="child-star" size={18} fill="currentColor"/></div>; }
+function ChildRow({ child, pointsToToman }: { child: Child; pointsToToman: number }) { return <div className="child-row"><div className={`child-avatar ${child.color}`}><AvatarContent child={child}/></div><div className="child-info"><b>{child.name}</b><small>{ageLabel(child.birthDate)}</small></div><div className="child-points"><strong>{toFa(child.balance)}</strong><span>{toman(child.balance, pointsToToman)}</span></div><Star className="child-star" size={18} fill="currentColor"/></div>; }
 function ChildProfile({ child, pointsToToman, tasks, onEdit, onDelete, onTasks }: { child: Child; pointsToToman: number; tasks: Task[]; onEdit: () => void; onDelete: () => void; onTasks: () => void }) {
-  const done = tasks.filter(task => task.childId === child.id && task.status === 'done').length;
-  const pending = tasks.filter(task => task.childId === child.id && task.status === 'pending').length;
-  return <article className="child-profile panel"><div className={`profile-avatar ${child.color}`}>{child.avatar}</div><div className="profile-name"><h3>{child.name}</h3><span>{ageLabel(child.birthDate)} · تولد {formatBirthDate(child.birthDate)}</span></div><div className="profile-tools"><button className="row-icon-btn" onClick={onEdit} aria-label="ویرایش فرزند"><Pencil size={17}/></button><button className="row-icon-btn delete" onClick={onDelete} aria-label="حذف فرزند"><Trash2 size={17}/></button></div><div className="profile-balance"><Coins size={20}/><strong>{toFa(child.balance)}</strong><span>ستاره</span><i/>{toman(child.balance, pointsToToman)}</div><div className="profile-progress"><div><span>وضعیت کارهای امروز</span><b>{toFa(done)} انجام‌شده · {toFa(pending)} باقی‌مانده</b></div><div className="progress-track"><i style={{ width: `${done + pending ? Math.round(done / (done + pending) * 100) : 0}%` }}/></div></div><div className="profile-footer"><span>ارزش ستاره: {toFa(pointsToToman)} تومان</span><button className="text-link" onClick={onTasks}>دیدن کارها <ChevronLeft size={16}/></button></div></article>;
+  const today = todayKey();
+  const done = tasks.filter(task => task.childId === child.id && task.dayKey === today && task.status === 'done').length;
+  const pending = tasks.filter(task => task.childId === child.id && task.dayKey === today && task.status === 'pending').length;
+  return <article className="child-profile panel"><div className={`profile-avatar ${child.color}`}><AvatarContent child={child}/></div><div className="profile-name"><h3>{child.name}</h3><span>{ageLabel(child.birthDate)} · تولد {formatBirthDate(child.birthDate)}</span></div>{(child.interests || child.note) && <div className="profile-extra">{child.interests && <span className="profile-interest"><Sparkles size={13}/> {child.interests}</span>}{child.note && <p>{child.note}</p>}</div>}<div className="profile-tools"><button className="row-icon-btn" onClick={onEdit} aria-label="ویرایش فرزند"><Pencil size={17}/></button><button className="row-icon-btn delete" onClick={onDelete} aria-label="حذف فرزند"><Trash2 size={17}/></button></div><div className="profile-balance"><Coins size={20}/><strong>{toFa(child.balance)}</strong><span>ستاره</span><i/>{toman(child.balance, pointsToToman)}</div><div className="profile-progress"><div><span>وضعیت کارهای امروز</span><b>{toFa(done)} انجام‌شده · {toFa(pending)} باقی‌مانده</b></div><div className="progress-track"><i style={{ width: `${done + pending ? Math.round(done / (done + pending) * 100) : 0}%` }}/></div></div><div className="profile-footer"><span>ارزش ستاره: {toFa(pointsToToman)} تومان</span><button className="text-link" onClick={onTasks}>دیدن کارها <ChevronLeft size={16}/></button></div></article>;
 }
 function RoutineRow({ routine, child, rate, onEdit, onDelete, onToggle }: { routine: Routine; child?: Child; rate: number; onEdit: () => void; onDelete: () => void; onToggle: () => void }) {
   const Icon = routine.category === 'زبان انگلیسی' ? Languages : routine.category === 'قرآن' ? BookMarked : routine.category === 'ورزش' ? Dumbbell : BookOpen;
@@ -479,7 +507,7 @@ function Modal({ title, onClose, children }: { title: string; onClose: () => voi
 }
 function FormContent({ type, item, childrenList, onChild, onTask, onRoutine, onReward, onClose }: {
   type: Exclude<ModalType, null>; item?: Child | Task | Routine | Reward; childrenList: Child[];
-  onChild: (input: Omit<Child, 'id' | 'balance' | 'color'>, id?: string) => void;
+  onChild: (input: Omit<Child, 'id' | 'balance'>, id?: string) => void;
   onTask: (input: Omit<Task, 'id' | 'status' | 'date' | 'dayKey' | 'routineId'>, id?: string) => void;
   onRoutine: (input: Omit<Routine, 'id' | 'active'>, id?: string) => void;
   onReward: (title: string, points: number, emoji: string, id?: string) => void;
@@ -491,6 +519,12 @@ function FormContent({ type, item, childrenList, onChild, onTask, onRoutine, onR
   const reward = type === 'reward' ? item as Reward | undefined : undefined;
   const [name, setName] = useState(child?.name ?? task?.title ?? routine?.title ?? reward?.title ?? '');
   const [birthDate, setBirthDate] = useState(child?.birthDate ?? '');
+  const [photo, setPhoto] = useState(child?.photo ?? '');
+  const [photoError, setPhotoError] = useState('');
+  const [photoLoading, setPhotoLoading] = useState(false);
+  const [color, setColor] = useState(child?.color ?? 'blue');
+  const [interests, setInterests] = useState(child?.interests ?? '');
+  const [note, setNote] = useState(child?.note ?? '');
   const [points, setPoints] = useState(task?.points ?? routine?.points ?? reward?.points ?? 1);
   const [childId, setChildId] = useState(task?.childId ?? routine?.childId ?? childrenList[0]?.id ?? '');
   const [category, setCategory] = useState(task?.category ?? routine?.category ?? 'درس و گفت‌وگو');
@@ -499,24 +533,31 @@ function FormContent({ type, item, childrenList, onChild, onTask, onRoutine, onR
   const normalizedBirthDate = digitsToLatin(birthDate).replace(/\//g, '-').trim();
   const birthDateValid = isValidJalaliDate(normalizedBirthDate);
   const noChildren = (type === 'task' || type === 'routine') && taskChildren.length === 0;
+  const handlePhotoChange = (file?: File) => {
+    if (!file) return;
+    setPhotoError(''); setPhotoLoading(true);
+    void prepareChildPhoto(file).then(setPhoto).catch(error => {
+      setPhotoError(error instanceof Error && error.message === 'image-too-large' ? 'حجم عکس باید کمتر از ۸ مگابایت باشد.' : 'خواندن یا آماده‌سازی عکس ممکن نشد.');
+    }).finally(() => setPhotoLoading(false));
+  };
   const submit = (event: FormEvent) => {
     event.preventDefault();
     if (!name.trim()) return;
     if (type === 'child') {
       if (!birthDateValid) return;
       const icon = ageLabel(normalizedBirthDate).includes('نوزاد') ? '👶🏻' : child?.avatar ?? '🧒🏻';
-      onChild({ name: name.trim(), birthDate: normalizedBirthDate, avatar: icon }, child?.id);
+      onChild({ name: name.trim(), birthDate: normalizedBirthDate, avatar: icon, color, photo: photo || undefined, interests: interests.trim() || undefined, note: note.trim() || undefined }, child?.id);
     } else if (type === 'task') onTask({ title: name.trim(), childId, points: Math.max(1, Math.round(points)), category }, task?.id);
     else if (type === 'routine') onRoutine({ title: name.trim(), childId, points: Math.max(1, Math.round(points)), category }, routine?.id);
     else onReward(name.trim(), Math.max(1, Math.round(points)), emoji, reward?.id);
   };
   return <form className="form-content" onSubmit={submit}>
-    {type === 'child' && <><p className="form-intro">نام و تاریخ شمسی تولد را وارد کنید؛ سن به‌صورت خودکار محاسبه می‌شود.</p><label>نام فرزند<input autoFocus value={name} onChange={event => setName(event.target.value)} placeholder="مثلاً آوا" required/></label><label>تاریخ تولد شمسی<input inputMode="numeric" value={birthDate} onChange={event => setBirthDate(event.target.value)} placeholder="مثلاً ۱۴۰۵/۰۸/۱۲" required aria-invalid={birthDate.length > 0 && !birthDateValid}/></label><small className="field-hint">روز / ماه / سال شمسی · نمونه: ۱۳۹۴/۰۱/۲۶{birthDate.length > 0 && !birthDateValid && <strong> · تاریخ را بررسی کنید</strong>}</small></>}
+    {type === 'child' && <><p className="form-intro">پروفایل فرزند را با عکس، تاریخ تولد و چند علاقه‌مندی شخصی‌سازی کنید.</p><div className="child-photo-editor"><div className={`child-photo-preview ${color}`}>{photo ? <img src={photo} alt="پیش‌نمایش عکس فرزند"/> : <span>{child?.avatar ?? '🧒🏻'}</span>}</div><div className="child-photo-actions"><b>عکس پروفایل</b><small>عکس مربعی می‌شود و برای همگام‌سازی کم‌حجم ذخیره می‌شود.</small><label className="photo-select-btn"><FileText size={16}/>{photoLoading ? 'در حال آماده‌سازی…' : 'انتخاب عکس'}<input type="file" accept="image/*" disabled={photoLoading} onChange={event => { handlePhotoChange(event.target.files?.[0]); event.target.value = ''; }}/></label>{photo && <button type="button" className="remove-photo-btn" onClick={() => setPhoto('')}>حذف عکس</button>}{photoError && <small className="photo-error" role="alert">{photoError}</small>}</div></div><label>نام فرزند<input autoFocus value={name} onChange={event => setName(event.target.value)} placeholder="مثلاً آوا" maxLength={40} required/></label><div className="child-form-row"><label>تاریخ تولد شمسی<input inputMode="numeric" value={birthDate} onChange={event => setBirthDate(event.target.value)} placeholder="مثلاً ۱۴۰۵/۰۸/۱۲" required aria-invalid={birthDate.length > 0 && !birthDateValid}/></label><label>رنگ پروفایل<select value={color} onChange={event => setColor(event.target.value)}><option value="blue">آبی</option><option value="green">سبز</option><option value="pink">صورتی</option></select></label></div><small className="field-hint">روز / ماه / سال شمسی · نمونه: ۱۳۹۴/۰۱/۲۶{birthDate.length > 0 && !birthDateValid && <strong> · تاریخ را بررسی کنید</strong>}</small><label>علاقه‌مندی‌ها<input value={interests} onChange={event => setInterests(event.target.value)} placeholder="مثلاً فوتبال، نقاشی، کتاب" maxLength={80}/></label><label>یادداشت والدین <span className="optional-label">اختیاری</span><textarea value={note} onChange={event => setNote(event.target.value)} placeholder="نکته‌ای که در برنامه‌ریزی و تشویق فرزند کمک می‌کند" maxLength={240} rows={3}/></label></>}
     {type === 'task' && <><p className="form-intro">این کار فقط برای امروز ثبت می‌شود.</p><label>عنوان کار<input autoFocus value={name} onChange={event => setName(event.target.value)} placeholder="مثلاً مرتب کردن میز مطالعه" required/></label><ChildPicker value={childId} childrenList={taskChildren} onChange={setChildId} disabled={noChildren}/><CategoryPicker value={category} onChange={setCategory}/><PointsInput label="ستاره کار" value={points} onChange={setPoints}/></>}
     {type === 'routine' && <><p className="form-intro">این برنامه هر روز برای فرزند انتخاب‌شده ساخته می‌شود و قابل ویرایش یا توقف است.</p><label>عنوان برنامه<input autoFocus value={name} onChange={event => setName(event.target.value)} placeholder="مثلاً حفظ پنج واژه‌ی انگلیسی" required/></label><ChildPicker value={childId} childrenList={taskChildren} onChange={setChildId} disabled={noChildren}/><CategoryPicker value={category} onChange={setCategory}/><PointsInput label="ستاره پس از تأیید روزانه" value={points} onChange={setPoints}/></>}
     {type === 'reward' && <><p className="form-intro">هزینه‌ی جایزه را با ستاره وارد کنید؛ مبلغ تومانی طبق نرخ تنظیم‌شده نمایش داده می‌شود.</p><label>نام جایزه<input autoFocus value={name} onChange={event => setName(event.target.value)} placeholder="مثلاً یک ساعت بازی" required/></label><label>شکلک جایزه<select value={emoji} onChange={event => setEmoji(event.target.value)}>{['🎁','🎮','🍦','🍰','🛝','📚','⚽','🎨','🍿','🚲','🧸','🌳'].map(value => <option key={value}>{value}</option>)}</select></label><PointsInput label="هزینه به ستاره" value={points} onChange={setPoints}/></>}
     {noChildren && <p className="form-warning">برای ثبت کار روزانه، فرزندی غیر از نوزاد باید در خانواده باشد.</p>}
-    <div className="form-actions"><button type="button" className="cancel-btn" onClick={onClose}>انصراف</button><button type="submit" className="primary-btn" disabled={noChildren || (type === 'child' && !birthDateValid)}><Plus size={18}/>{type === 'child' ? child ? 'ذخیره‌ی تغییرات' : 'افزودن فرزند' : type === 'task' ? task ? 'ذخیره‌ی تغییرات' : 'ثبت کار امروز' : type === 'routine' ? routine ? 'ذخیره‌ی برنامه' : 'افزودن به برنامه‌ی روزانه' : reward ? 'ذخیره‌ی جایزه' : 'ساخت جایزه'}</button></div>
+    <div className="form-actions"><button type="button" className="cancel-btn" onClick={onClose}>انصراف</button><button type="submit" className="primary-btn" disabled={noChildren || photoLoading || (type === 'child' && !birthDateValid)}><Plus size={18}/>{type === 'child' ? child ? 'ذخیره‌ی تغییرات' : 'افزودن فرزند' : type === 'task' ? task ? 'ذخیره‌ی تغییرات' : 'ثبت کار امروز' : type === 'routine' ? routine ? 'ذخیره‌ی برنامه' : 'افزودن به برنامه‌ی روزانه' : reward ? 'ذخیره‌ی جایزه' : 'ساخت جایزه'}</button></div>
   </form>;
 }
 function ChildPicker({ value, childrenList, onChange, disabled }: { value: string; childrenList: Child[]; onChange: (value: string) => void; disabled: boolean }) { return <label>برای کدام فرزند؟<select value={value} onChange={event => onChange(event.target.value)} disabled={disabled}>{childrenList.map(child => <option key={child.id} value={child.id}>{child.avatar} {child.name}</option>)}</select></label>; }
